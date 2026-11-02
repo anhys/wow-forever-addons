@@ -1,0 +1,3 @@
+-- Private copy of the ForeverChatProbe reader. No probe UI, globals or saved chat log.
+local _,NS=...
+NS.ChatReader={}

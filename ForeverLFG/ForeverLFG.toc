@@ -1,0 +1,78 @@
+## Interface: 16001
+## Title: ForeverLFG
+## IconTexture: Interface\AddOns\ForeverLFG\Media\Globe.tga
+## Notes: Search groups by language and role, or recruit players for your party
+## Notes-ruRU: Поиск групп по языкам и ролям, набор игроков в свою группу
+## Notes-deDE: Gruppen nach Sprache und Rolle suchen oder Spieler rekrutieren
+## Notes-frFR: Rechercher des groupes par langue et rôle ou recruter des joueurs
+## Notes-esES: Busca grupos por idioma y rol o recluta jugadores para tu grupo
+## Notes-esMX: Busca grupos por idioma y rol o recluta jugadores para tu grupo
+## Notes-zhCN: 按语言和职责搜索队伍，或为你的队伍招募玩家
+## Notes-zhTW: 依語言和職責搜尋隊伍，或為你的隊伍招募玩家
+## Author: Forever
+## X-License: Custom - All Rights Reserved (see LICENSE)
+## X-Website: https://werko.dev/
+## X-Email: wow@werko.dev
+## Version: 0.7.29
+## SavedVariables: ForeverLFGProbeDB
+## SavedVariablesPerCharacter: ForeverLFGCharacterDB
+
+Libs/ChannelBus/Bootstrap.lua
+Libs/ChannelBus/Config.lua
+Libs/ChannelBus/Inflate.lua
+Libs/ChannelBus/Codec.lua
+Libs/ChannelBus/Fragments.lua
+Libs/ChannelBus/Bus.lua
+Libs/ChannelBus/Native.lua
+ChatBootstrap.lua
+Libs/ChatReader/Text.lua
+Libs/ChatReader/Lexicon.lua
+Libs/ChatReader/Channels.lua
+Libs/ChatReader/Recognizer.lua
+Libs/ChatReader/Data.lua
+Libs/ChatReader/Collector.lua
+ChatSync.lua
+Localization.lua
+Locales/ruRU.lua
+Locales/deDE.lua
+Locales/frFR.lua
+Locales/esES.lua
+Locales/zhCN.lua
+Locales/zhTW.lua
+Locales/koKR.lua
+Locales/ptBR.lua
+Locales/itIT.lua
+FilterLocalization.lua
+BrowseLocalization.lua
+QuestLocalization.lua
+QuestTutorialLocalization.lua
+QuestTutorialSearchLocalization.lua
+Languages.lua
+Log.lua
+Search.lua
+TooltipGuard.lua
+FilterModel.lua
+FilterPresets.lua
+FilterBrowse.lua
+BrowseLayout.lua
+BrowseRows.lua
+BrowseMenus.lua
+SettingsUI.lua
+RoleButton.lua
+FilterUI.lua
+RefreshUI.lua
+UI.lua
+QuestSync.lua
+GroupQuests.lua
+ChannelRecording.lua
+QuestUI.lua
+MultilingualFont.lua
+ChannelCopy.lua
+QuestWhisper.lua
+QuestSkin.lua
+QuestAttention.lua
+QuestMatchesUI.lua
+QuestMinimap.lua
+QuestLauncher.lua
+QuestTutorialSearch.lua
+QuestTutorial.lua
