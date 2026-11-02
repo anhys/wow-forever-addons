@@ -1,0 +1,24 @@
+## Interface: 16001
+## Title: HandyNotes: WoW Forever
+## Notes: Where are the hidden treasures in WoW Forever?
+## Author: Kemayo
+## Version: v3
+## IconTexture: Interface\Icons\Ability_Spy
+## DefaultState: enabled
+## X-Category: Map
+## X-eMail: kemayo @ gmail DOT com
+## X-Curse-Project-ID: 1697216
+## X-Wago-ID: 
+## SavedVariables: HandyNotes_WoWForeverDB
+## RequiredDeps: HandyNotes
+## AllowLoadGameType: camelot
+
+handler\handler.xml
+
+constants.lua
+forever.lua
+
+zones\MountHyjal.lua
+zones\Riverglades.lua
+zones\ShenDralas.lua
+zones\ZephrasIsle.lua
