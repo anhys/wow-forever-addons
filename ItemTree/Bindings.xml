@@ -1,0 +1,29 @@
+<Bindings>
+  <!--
+    The client discovers this file in the addon folder by itself, so it must not be listed
+    in ItemTree.toc. No default key is set on purpose: a default attribute here would stomp
+    whatever the player has already bound to that key, silently and before anything can be
+    checked. UI\Keybind.lua ApplyDefault offers a default at login instead, once per
+    character, and only takes a key that GetBindingAction says runs nothing at all.
+    The labels come from BINDING_HEADER_ITEMTREE,
+    BINDING_NAME_ITEMTREE_OPEN and BINDING_NAME_ITEMTREE_BOSSLOOT, all set in UI\Keybind.lua,
+    and the body can only call a global, which is why ItemTree_OpenHovered and
+    ItemTree_OpenBossLoot exist. With no runOnUp attribute the body runs on key down only.
+    Brief B1: ITEMTREE_BOSSLOOT opens the window on the Boss loot tab. It is never offered a
+    default key; the player sets one under Settings.
+    Brief PR18: ITEMTREE_CRAFTNEXT is "Create next in the ItemTree queue", one press of the
+    Professions craft queue. Its label and ItemTree_CraftQueueNext live in UI\ProfessionsStub.lua,
+    which does nothing unless the Professions tab is on and loaded. It must stay in this file:
+    the client reads a Bindings.xml from every addon folder, load on demand ones included, and a
+    second ITEMTREE header there is an error. No default key.
+  -->
+  <Binding name="ITEMTREE_OPEN" header="ITEMTREE">
+    ItemTree_OpenHovered()
+  </Binding>
+  <Binding name="ITEMTREE_BOSSLOOT">
+    ItemTree_OpenBossLoot()
+  </Binding>
+  <Binding name="ITEMTREE_CRAFTNEXT">
+    ItemTree_CraftQueueNext()
+  </Binding>
+</Bindings>

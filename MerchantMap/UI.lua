@@ -1,0 +1,1936 @@
+local _, MM = ...
+
+-- Frame helpers from Widgets.lua, search matching from Search.lua
+local W, S = MM.W, MM.Search
+local ROW_H = W.ROW_H
+-- Visible rows; recalculated when the window is resized
+local ROWS, TREE_ROWS = 18, 16
+local TREE_W, LIST_W = 196, 360
+local C = MM.COLORS
+local ACCENT, BORDER = C.accent, C.border
+local MAX_TOOLTIP_VENDORS = 12
+local ALL, UNCAT = MM.ALL, MM.UNCAT
+
+local results, offset, selected = {}, 0, nil
+local nodes, treeOffset, category = {}, 0, ALL
+
+-- The compact view always lists all items; the chosen category comes back with the full view
+local function ActiveCategory()
+    return MM.db.compact and ALL or category
+end
+local counts, sortKeys = {}, {}
+local editMode
+-- Tree and counts only change with data or category edits, not while typing or scrolling
+local treeDirty, countsDirty = true, true
+local refreshTimer
+
+local function MarkDirty()
+    treeDirty, countsDirty = true, true
+end
+
+local Fill, Outline, Grain, Gradient, SkinButton = W.Fill, W.Outline, W.Grain, W.Gradient, W.SkinButton
+local EditBox, TextButton, SetTooltip = W.EditBox, W.TextButton, W.SetTooltip
+local AddScrollbar, UpdateScrollbar, SCROLL_W = W.AddScrollbar, W.UpdateScrollbar, W.SCROLL_W
+
+-- Layout ------------------------------------------------------------------
+
+local panel = CreateFrame("Frame", "MerchantMapFrame", UIParent)
+panel:SetSize(10 + TREE_W + 8 + LIST_W + 10, 76 + ROWS * ROW_H + 26)
+panel:SetPoint("CENTER")
+panel:SetFrameStrata("FULLSCREEN_DIALOG")
+panel:SetClampedToScreen(true)
+panel:SetMovable(true)
+panel:EnableMouse(true)
+panel:RegisterForDrag("LeftButton")
+panel:Hide()
+Fill(panel, C.bg, 0.97)
+Grain(panel, 0.35)
+Outline(panel, BORDER)
+
+-- Header band behind the title, with a thin rule under it
+local header = CreateFrame("Frame", nil, panel)
+header:SetPoint("TOPLEFT", 1, -1)
+header:SetPoint("TOPRIGHT", -1, -1)
+header:SetHeight(25)
+Gradient(header, C.bg, C.header)
+local rule = header:CreateTexture(nil, "ARTWORK")
+rule:SetHeight(1)
+rule:SetPoint("BOTTOMLEFT")
+rule:SetPoint("BOTTOMRIGHT")
+rule:SetColorTexture(BORDER[1], BORDER[2], BORDER[3], 1)
+tinsert(UISpecialFrames, "MerchantMapFrame")
+-- The stock and search tips windows open above it
+MM.panel = panel
+-- Closes when combat starts
+panel:RegisterEvent("PLAYER_REGEN_DISABLED")
+panel:SetScript("OnEvent", panel.Hide)
+
+-- Position is shared; the full and compact views each remember their own size
+local function SaveGeometry()
+    local point, _, relPoint, x, y = panel:GetPoint()
+    MM.db.point = { point, relPoint, x, y }
+    local size = { panel:GetWidth(), panel:GetHeight() }
+    if MM.db.compact then MM.db.compactSize = size else MM.db.size = size end
+end
+
+panel:SetScript("OnDragStart", panel.StartMoving)
+panel:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    SaveGeometry()
+end)
+
+-- Resizable from the bottom right; the category column keeps its width.
+-- The corner follows the cursor itself, so after hitting the minimum size it only
+-- grows again once the cursor is back past the corner.
+local MIN_FULL = { 10 + TREE_W + 8 + 220 + 10, 76 + 8 * ROW_H + 26 }
+local MIN_COMPACT = { 200, 30 + 4 * ROW_H + 16 }
+local DEFAULT_FULL = { 10 + TREE_W + 8 + LIST_W + 10, 76 + 18 * ROW_H + 26 }
+local DEFAULT_COMPACT = { 260, 30 + 14 * ROW_H + 16 }
+local MAX_W, MAX_H = 1400, 1100
+
+local grip = CreateFrame("Button", nil, panel)
+grip:SetSize(14, 14)
+grip:SetPoint("BOTTOMRIGHT", -3, 3)
+grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+grip:GetNormalTexture():SetVertexColor(BORDER[1] * 1.6, BORDER[2] * 1.6, BORDER[3] * 1.6)
+
+local function CursorXY()
+    local x, y = GetCursorPosition()
+    local scale = panel:GetEffectiveScale()
+    return x / scale, y / scale
+end
+
+local function Resize(self)
+    local x, y = CursorXY()
+    local min = MM.db.compact and MIN_COMPACT or MIN_FULL
+    local w = math.max(min[1], math.min(MAX_W, x + self.offX - self.left))
+    local h = math.max(min[2], math.min(MAX_H, self.top - (y - self.offY)))
+    panel:SetSize(w, h)
+end
+
+grip:SetScript("OnMouseDown", function(self)
+    local x, y = CursorXY()
+    self.offX, self.offY = panel:GetRight() - x, y - panel:GetBottom()
+    self.left, self.top = panel:GetLeft(), panel:GetTop()
+    -- Pin the top left corner so only the bottom right moves
+    panel:ClearAllPoints()
+    panel:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", self.left, self.top)
+    self:SetScript("OnUpdate", Resize)
+end)
+grip:SetScript("OnMouseUp", function(self)
+    self:SetScript("OnUpdate", nil)
+    SaveGeometry()
+end)
+
+local title = header:CreateFontString(nil, "OVERLAY", "MM_GameFontNormal")
+title:SetPoint("TOPLEFT", 10, -7)
+title:SetText("Merchant Map")
+title:SetTextColor(ACCENT[1], ACCENT[2], ACCENT[3])
+
+local close = CreateFrame("Button", nil, header)
+close:SetSize(20, 20)
+close:SetPoint("TOPRIGHT", -4, -4)
+close:SetNormalFontObject("MM_GameFontHighlight")
+close:SetHighlightFontObject("MM_GameFontNormal")
+close:SetText("x")
+close:SetScript("OnClick", function() panel:Hide() end)
+
+-- Small square buttons for switching between the full and compact views
+local function SquareButton(parent, text, tip)
+    local b = CreateFrame("Button", nil, parent)
+    b:SetSize(18, 18)
+    SkinButton(b)
+    b:SetNormalFontObject("MM_GameFontHighlightSmall")
+    b:SetText(text)
+    SetTooltip(b, tip)
+    return b
+end
+
+local compactBtn = SquareButton(header, "-", "Compact view: just the search box and the item list.")
+compactBtn:SetPoint("RIGHT", close, "LEFT", -4, 0)
+
+local optionsBtn = CreateFrame("Button", nil, header)
+optionsBtn:SetSize(60, 18)
+optionsBtn:SetPoint("RIGHT", compactBtn, "LEFT", -6, 0)
+SkinButton(optionsBtn)
+optionsBtn:SetNormalFontObject("MM_GameFontNormalSmall")
+optionsBtn:SetText("Options")
+optionsBtn:SetScript("OnClick", function() MM:OpenOptions() end)
+
+-- Search tips: a window explaining every way to search
+local tipsBtn = CreateFrame("Button", nil, header)
+tipsBtn:SetSize(74, 18)
+tipsBtn:SetPoint("RIGHT", optionsBtn, "LEFT", -6, 0)
+SkinButton(tipsBtn)
+tipsBtn:SetNormalFontObject("MM_GameFontNormalSmall")
+tipsBtn:SetText("Search tips")
+tipsBtn:SetScript("OnClick", function() MM:ToggleSearchTips() end)
+
+-- Holidays: a toggle for each holiday's vendors and items, all off by default
+local holidayBtn = CreateFrame("Button", nil, header)
+holidayBtn:SetSize(64, 18)
+holidayBtn:SetPoint("RIGHT", tipsBtn, "LEFT", -6, 0)
+SkinButton(holidayBtn)
+holidayBtn:SetNormalFontObject("MM_GameFontNormalSmall")
+holidayBtn:SetText("Holidays")
+SetTooltip(holidayBtn, "Show vendors and items that are only around during a holiday.")
+
+local holidayList = CreateFrame("Frame", nil, holidayBtn)
+holidayList:SetSize(220, #MM.HOLIDAYS * 20 + 6)
+holidayList:SetPoint("TOPRIGHT", holidayBtn, "BOTTOMRIGHT", 0, -2)
+holidayList:SetFrameStrata("FULLSCREEN_DIALOG")
+holidayList:EnableMouse(true)
+holidayList:Hide()
+Fill(holidayList, C.bg)
+Outline(holidayList, BORDER)
+
+local holidayRows = {}
+for i, holiday in ipairs(MM.HOLIDAYS) do
+    local row = CreateFrame("Button", nil, holidayList)
+    row:SetSize(214, 20)
+    row:SetPoint("TOPLEFT", 3, -3 - (i - 1) * 20)
+    local hl = row:CreateTexture()
+    hl:SetColorTexture(ACCENT[1], ACCENT[2], ACCENT[3], 0.15)
+    row:SetHighlightTexture(hl)
+    local check = CreateFrame("Frame", nil, row)
+    check:SetSize(12, 12)
+    check:SetPoint("LEFT", 4, 0)
+    Fill(check, C.inset)
+    Outline(check, BORDER)
+    local fill = check:CreateTexture(nil, "ARTWORK")
+    fill:SetPoint("TOPLEFT", 3, -3)
+    fill:SetPoint("BOTTOMRIGHT", -3, 3)
+    fill:SetColorTexture(ACCENT[1], ACCENT[2], ACCENT[3], 1)
+    local text = row:CreateFontString(nil, "OVERLAY", "MM_GameFontHighlightSmall")
+    text:SetPoint("LEFT", check, "RIGHT", 6, 0)
+    text:SetText(holiday)
+    function row:Update() fill:SetShown(MM:IsHolidayShown(holiday)) end
+    row:SetScript("OnClick", function(self)
+        MM:SetHolidayShown(holiday, not MM:IsHolidayShown(holiday))
+        self:Update()
+    end)
+    holidayRows[i] = row
+end
+
+-- Closes on a click anywhere else
+holidayList:SetScript("OnShow", function(self)
+    for _, row in ipairs(holidayRows) do row:Update() end
+    self:RegisterEvent("GLOBAL_MOUSE_DOWN")
+end)
+holidayList:SetScript("OnHide", function(self) self:UnregisterEvent("GLOBAL_MOUSE_DOWN") end)
+holidayList:SetScript("OnEvent", function(self)
+    if not self:IsMouseOver() and not holidayBtn:IsMouseOver() then self:Hide() end
+end)
+holidayBtn:SetScript("OnClick", function() holidayList:SetShown(not holidayList:IsShown()) end)
+
+local box = EditBox(panel)
+box:SetPoint("TOPLEFT", 10, -30)
+box:SetPoint("TOPRIGHT", -10, -30)
+box:SetHeight(22)
+
+box:SetTextInsets(6, 22, 0, 0)
+
+local placeholder = box:CreateFontString(nil, "OVERLAY", "MM_GameFontDisableSmall")
+placeholder:SetPoint("LEFT", 7, 0)
+
+local clear = CreateFrame("Button", nil, box)
+clear:SetSize(20, 20)
+clear:SetPoint("RIGHT", -1, 0)
+clear:SetNormalFontObject("MM_GameFontDisable")
+clear:SetHighlightFontObject("MM_GameFontNormal")
+clear:SetText("x")
+clear:Hide()
+clear:SetScript("OnClick", function() box:SetText("") end)
+
+local status = panel:CreateFontString(nil, "OVERLAY", "MM_GameFontDisableSmall")
+status:SetPoint("TOPLEFT", box, "BOTTOMLEFT", 2, -6)
+
+local tree = CreateFrame("Frame", nil, panel)
+tree:SetPoint("TOPLEFT", 10, -76)
+tree:SetPoint("BOTTOMLEFT", 10, 52)
+tree:SetWidth(TREE_W)
+tree:EnableMouseWheel(true)
+Fill(tree, C.inset, 0.85)
+Outline(tree, BORDER, 0.6)
+AddScrollbar(tree)
+
+local list = CreateFrame("Frame", nil, panel)
+list:SetPoint("TOPLEFT", tree, "TOPRIGHT", 8, 0)
+list:SetPoint("BOTTOMRIGHT", -10, 26)
+list:EnableMouseWheel(true)
+Fill(list, C.inset, 0.85)
+Outline(list, BORDER, 0.6)
+AddScrollbar(list)
+
+local empty = list:CreateFontString(nil, "OVERLAY", "MM_GameFontDisable")
+empty:SetPoint("CENTER")
+
+local newBtn = TextButton(panel, "New", 56)
+newBtn:SetPoint("TOPLEFT", tree, "BOTTOMLEFT", 0, -6)
+local renameBtn = TextButton(panel, "Rename", 56)
+renameBtn:SetPoint("LEFT", newBtn, "RIGHT", 6, 0)
+local deleteBtn = TextButton(panel, "Delete", 56)
+deleteBtn:SetPoint("LEFT", renameBtn, "RIGHT", 6, 0)
+SetTooltip(newBtn, "New subcategory under the selected one. Use / for nesting, e.g. Base/Consumables/Ammo")
+SetTooltip(renameBtn, "Rename or move a category you made. Items and subcategories follow.")
+SetTooltip(deleteBtn, "Shift-click to delete a category you made, with its subcategories.")
+
+local editor = EditBox(panel)
+editor:SetPoint("TOPLEFT", tree, "BOTTOMLEFT", 0, -6)
+editor:SetSize(TREE_W, 20)
+editor:Hide()
+
+local hint = panel:CreateFontString(nil, "OVERLAY", "MM_GameFontDisableSmall")
+hint:SetPoint("BOTTOMLEFT", 10, 8)
+hint:SetPoint("RIGHT", -22, 0)
+hint:SetJustifyH("LEFT")
+hint:SetWordWrap(false)
+hint:SetText("Click: mark nearest   Drag onto category: add   Right-click: remove   Shift-click: link")
+
+-- Compact view controls: close and back to the full view, beside the search box
+local miniClose = CreateFrame("Button", nil, panel)
+miniClose:SetSize(18, 18)
+miniClose:SetPoint("TOPRIGHT", -5, -6)
+miniClose:SetNormalFontObject("MM_GameFontHighlight")
+miniClose:SetHighlightFontObject("MM_GameFontNormal")
+miniClose:SetText("x")
+miniClose:SetScript("OnClick", function() panel:Hide() end)
+miniClose:Hide()
+
+local expandBtn = SquareButton(panel, "+", "Full view: categories, status and hints.")
+expandBtn:SetPoint("RIGHT", miniClose, "LEFT", -3, 0)
+expandBtn:Hide()
+
+-- The item being dragged follows the cursor, with its name and where it will go
+local dragIcon = CreateFrame("Frame", nil, UIParent)
+dragIcon:SetSize(30, 30)
+dragIcon:SetFrameStrata("TOOLTIP")
+dragIcon:Hide()
+Fill(dragIcon, C.bg)
+Outline(dragIcon, ACCENT)
+dragIcon.tex = dragIcon:CreateTexture(nil, "ARTWORK")
+dragIcon.tex:SetPoint("TOPLEFT", 2, -2)
+dragIcon.tex:SetPoint("BOTTOMRIGHT", -2, 2)
+dragIcon.tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+dragIcon.name = dragIcon:CreateFontString(nil, "OVERLAY", "MM_GameFontHighlight")
+dragIcon.name:SetPoint("BOTTOMLEFT", dragIcon, "RIGHT", 6, 1)
+dragIcon.hint = dragIcon:CreateFontString(nil, "OVERLAY", "MM_GameFontDisableSmall")
+dragIcon.hint:SetPoint("TOPLEFT", dragIcon, "RIGHT", 6, -1)
+
+local treeRows, rows = {}, {}
+
+-- Service NPCs ------------------------------------------------------------
+-- Trainers, flight masters and the like are listed as "s" .. npcID keys next to item IDs,
+-- under a "Services" category tree that isn't saved and can't be edited.
+
+
+local function IsService(id)
+    return type(id) == "string"
+end
+
+-- Services and Holidays are built from the data, not edited
+local function IsVirtual(path)
+    return path == "Services" or path:sub(1, 9) == "Services/" or MM:IsHolidayPath(path)
+end
+
+local servicePaths
+local function ServicePaths()
+    if not servicePaths and next(MM.services) then
+        servicePaths = {}
+        for _, npc in pairs(MM.services) do
+            for _, path in ipairs(npc.paths) do
+                local p = path
+                while p and not servicePaths[p] do
+                    servicePaths[p] = true
+                    p = MM:ParentPath(p)
+                end
+            end
+        end
+    end
+    return servicePaths or {}
+end
+
+
+local function ServiceInCategory(npc, cat)
+    if cat == ALL then return true end
+    for _, path in ipairs(npc.paths) do
+        if path == cat or path:sub(1, #cat + 1) == cat .. "/" then return true end
+    end
+    return false
+end
+
+-- Group rows stand for every service NPC in one category: "n:" .. path for the nearest one,
+-- "a:" .. path for all of them
+local groups, groupSizes, groupIcons = {}, {}, {}
+
+local function IsGroup(id)
+    return type(id) == "string" and (id:sub(1, 2) == "n:" or id:sub(1, 2) == "a:")
+end
+
+local function IsNearest(id)
+    return type(id) == "string" and id:sub(1, 2) == "n:"
+end
+
+-- The "Nearest vendor for <search>" row on top of a search with several items: the closest vendor
+-- selling any of them. ids are the matched items, key the closest vendor at the last refresh.
+local nearestItems = { id = "v:", ids = {} }
+
+-- "Flight Masters" -> "Flight Master", "Mailboxes" -> "Mailbox"
+local function Singular(word)
+    if word:find("xes$") then return word:sub(1, -3) end
+    return (word:gsub("s$", ""))
+end
+
+local function GroupLabel(id)
+    local path = id:sub(3)
+    local leaf = path:match("[^/]+$")
+    local trainer = path:find("^Services/Trainers/") and not leaf:find("Master")
+    if IsNearest(id) then
+        return "Nearest " .. (trainer and (leaf .. " Trainer") or Singular(leaf))
+    end
+    return "All " .. (trainer and (leaf .. " Trainers") or leaf == "Repair" and "Repairs" or leaf)
+end
+
+-- The service NPC a row stands for: itself, or the closest one of a group row
+local function ServiceKey(id)
+    if not IsGroup(id) then return id end
+    local group = groups[id:sub(3)]
+    return group and MM:ClosestServiceKey(group)
+end
+
+-- Category paths of shown service NPCs, grouped for the group rows
+local function BuildGroups()
+    wipe(groups)
+    wipe(groupSizes)
+    for key, npc in pairs(MM.services) do
+        for _, path in ipairs(npc.paths) do
+            local group = groups[path] or {}
+            groups[path] = group
+            group[key] = true
+            groupSizes[path] = (groupSizes[path] or 0) + 1
+            groupIcons[path] = groupIcons[path] or npc.icon
+        end
+    end
+end
+
+local function SortName(id)
+    -- Nearest and All rows of a category stay together
+    if IsGroup(id) then return strlower(id:sub(3)) .. (IsNearest(id) and "1" or "2") end
+    if IsService(id) then return strlower(MM.services[id].name) end
+    return S.LowerName(id)
+end
+
+local ROOT_COLORS = {
+    ["Consumables"] = { 0.55, 0.85, 0.55 },
+    ["Professions"] = { 0.55, 0.75, 1.0 },
+    ["Gear"] = { 0.8, 0.8, 0.85 },
+    ["Leveling"] = { 0.5, 0.9, 0.85 },
+    ["PvP"] = { 1.0, 0.5, 0.45 },
+    ["Reputation"] = { 0.75, 0.6, 1.0 },
+    ["Mounts"] = { 1.0, 0.75, 0.45 },
+    ["Pets"] = { 1.0, 0.65, 0.8 },
+    ["Class Supplies"] = { 0.95, 0.9, 0.5 },
+    ["Quest Items"] = { 1.0, 0.85, 0.3 },
+    ["Services"] = { 0.55, 0.85, 0.9 },
+}
+local PALETTE = { { 0.6, 0.8, 0.95 }, { 0.9, 0.7, 0.6 }, { 0.7, 0.9, 0.6 }, { 0.85, 0.7, 0.95 } }
+
+-- Tint by root category, fading toward grey with depth
+local function CategoryColor(path, depth)
+    local root = path:match("^[^/]+")
+    local c = ROOT_COLORS[root]
+    if not c then
+        local sum = 0
+        for i = 1, #root do sum = sum + root:byte(i) end
+        c = PALETTE[sum % #PALETTE + 1]
+    end
+    local fade = math.min(depth * 0.2, 0.6)
+    return c[1] + (0.8 - c[1]) * fade, c[2] + (0.8 - c[2]) * fade, c[3] + (0.8 - c[3]) * fade
+end
+
+-- Category icons by name: item IDs, "spell:ID" or texture paths.
+-- Categories without one use their parent's; class trainers use the class icon.
+local ICONS = "Interface\\Icons\\"
+local CATEGORY_ICONS = {
+    ["Holidays"] = 17303, ["Feast of Winter Veil"] = 17202, ["Hallow's End"] = 20557,
+    ["Lunar Festival"] = 21747, ["Love is in the Air"] = 21815, ["Children's Week"] = 23161,
+    ["Darkmoon Faire (Elwynn Forest)"] = 19302, ["Darkmoon Faire (Mulgore)"] = 19302,
+    ["Consumables"] = 118, ["Food & Drink"] = 4540, ["Food"] = 117, ["Drink"] = 159, ["Buff Food"] = 2680,
+    ["Ammo"] = 2512, ["Arrows"] = 2512, ["Bullets"] = 2516, ["Potions"] = 118, ["Elixirs"] = 5997,
+    ["Flasks"] = 13510, ["Scrolls"] = 955, ["Bandages"] = 1251, ["Explosives"] = 4358,
+    ["Weapon Enhancements"] = 2862,
+    ["Professions"] = ICONS .. "Trade_Engineering", ["Materials"] = 2320, ["Recipes"] = 2598,
+    ["Tools"] = 2901, ["Lures"] = 6529, ["Poles"] = 6256,
+    ["Tailoring"] = "spell:3908", ["Leatherworking"] = "spell:2108", ["Blacksmithing"] = "spell:2018",
+    ["Alchemy"] = "spell:2259", ["Enchanting"] = "spell:7411", ["Engineering"] = "spell:4036",
+    ["Cooking"] = "spell:2550", ["First Aid"] = "spell:3273", ["Fishing"] = "spell:7620",
+    ["Mining"] = "spell:2575", ["Herbalism"] = "spell:2366", ["Skinning"] = "spell:8613",
+    ["Gear"] = 1364, ["Armor"] = 1364, ["Weapons"] = 25, ["Bags"] = 4496, ["Quivers & Pouches"] = 2101,
+    ["Leveling"] = ICONS .. "Spell_Holy_SurgeOfLight",
+    ["PvP"] = ICONS .. "INV_BannerPVP_02",
+    ["Reputation"] = ICONS .. "Achievement_Reputation_01",
+    ["Mounts"] = ICONS .. "Ability_Mount_RidingHorse",
+    ["Pets"] = 8485,
+    ["Class Supplies"] = 17031, ["Reagents"] = 17031, ["Poisons"] = 2892, ["Books"] = ICONS .. "INV_Misc_Book_09",
+    ["Quest Items"] = ICONS .. "INV_Misc_Note_01",
+    ["Services"] = ICONS .. "INV_Misc_GroupLooking",
+}
+local iconCache = {}
+
+local function IconOf(spec)
+    if type(spec) == "number" then return C_Item.GetItemIconByID(spec) end
+    local spell = tonumber(spec:match("^spell:(%d+)$"))
+    if spell then return C_Spell.GetSpellTexture(spell) end
+    return spec
+end
+
+local function CategoryIcon(path)
+    if iconCache[path] == nil then
+        local leaf, parent = path:match("[^/]+$"), MM:ParentPath(path)
+        local spec = CATEGORY_ICONS[leaf]
+        if parent and parent:match("/Classes$") then spec = ICONS .. "ClassIcon_" .. leaf end
+        local icon = spec and IconOf(spec)
+            or (IsVirtual(path) and MM:ServiceIcon(path))
+            or (parent and CategoryIcon(parent))
+        iconCache[path] = icon or false
+    end
+    return iconCache[path] or nil
+end
+
+-- Sorts children directly after their parent ("A/B" before "A B")
+local function SortKey(path)
+    local key = sortKeys[path]
+    if not key then
+        -- "Other ..." categories sort after their siblings
+        key = ("/" .. strlower(path)):gsub("/other", "/\127other"):gsub("/", "\001"):sub(2)
+        sortKeys[path] = key
+    end
+    return key
+end
+
+local function SortedPaths(set)
+    local out = {}
+    for path in pairs(set) do out[#out + 1] = path end
+    table.sort(out, function(a, b) return SortKey(a) < SortKey(b) end)
+    return out
+end
+
+local function BuildTree()
+    local db = MM.db
+    wipe(nodes)
+    -- Item categories fold up under All items; Services sit apart below a divider
+    nodes[1] = { path = ALL, label = "All items", depth = 0, kids = true }
+    local itemsHidden = db.collapsed[ALL]
+
+    local all, hasKids = {}, {}
+    for path in pairs(db.categories) do all[path] = true end
+    for path in pairs(ServicePaths()) do all[path] = true end
+    for path in pairs(MM:HolidayPaths()) do all[path] = true end
+    for path in pairs(all) do
+        local parent = MM:ParentPath(path)
+        if parent then hasKids[parent] = true end
+    end
+
+    local services = {}
+    for _, path in ipairs(SortedPaths(all)) do
+        local isService = path == "Services" or path:sub(1, 9) == "Services/"
+        local hidden, parent = not isService and itemsHidden, MM:ParentPath(path)
+        while parent and not hidden do
+            hidden = db.collapsed[parent]
+            parent = MM:ParentPath(parent)
+        end
+        if not hidden then
+            -- level is the depth within its own tree, for the color; depth includes the indent under All items
+            local _, level = path:gsub("/", "")
+            local node = {
+                path = path, label = path:match("[^/]+$"), level = level,
+                depth = isService and level or level + 1, kids = hasKids[path] == true,
+            }
+            if isService then services[#services + 1] = node else nodes[#nodes + 1] = node end
+        end
+    end
+
+    if not itemsHidden then nodes[#nodes + 1] = { path = UNCAT, label = "Uncategorized", depth = 1 } end
+    if #services > 0 then
+        nodes[#nodes + 1] = { divider = true }
+        for _, node in ipairs(services) do nodes[#nodes + 1] = node end
+    end
+end
+
+local seen = {}
+
+local function CountItems()
+    local db = MM.db
+    wipe(counts)
+    local function Count(path)
+        local p = path
+        while p and not seen[p] do
+            seen[p] = true
+            counts[p] = (counts[p] or 0) + 1
+            p = MM:ParentPath(p)
+        end
+    end
+    for itemID in pairs(db.items) do
+        counts[ALL] = (counts[ALL] or 0) + 1
+        local set, holidays = db.itemCats[itemID], MM:ItemHolidayPaths(itemID)
+        wipe(seen)
+        for path in pairs(set or {}) do Count(path) end
+        for holiday in pairs(holidays or {}) do Count("Holidays/" .. holiday) end
+        if not (set or holidays) then counts[UNCAT] = (counts[UNCAT] or 0) + 1 end
+    end
+    for _, npc in pairs(MM.services) do
+        wipe(seen)
+        for _, path in ipairs(npc.paths) do
+            local p = path
+            while p and not seen[p] do
+                seen[p] = true
+                counts[p] = (counts[p] or 0) + 1
+                p = MM:ParentPath(p)
+            end
+        end
+    end
+end
+
+-- "New here" marks ----------------------------------------------------------
+-- An item dropped on a category, or left in its other categories (or Uncategorized) after a remove,
+-- is marked there and the category glows, until you've seen it in that category. This session only.
+
+local Fresh = { paths = {}, seen = {}, pulse = {}, pulseItems = {} }
+
+-- path is root or one of its subcategories; Uncategorized has none
+function Fresh.Under(path, root)
+    return path == root or (root ~= UNCAT and path:sub(1, #root + 1) == root .. "/")
+end
+
+function Fresh.Mark(itemID, path)
+    Fresh.paths[path] = Fresh.paths[path] or {}
+    Fresh.paths[path][itemID] = true
+    Fresh.pulse[path], Fresh.pulseItems[itemID] = true, true
+end
+
+-- Drops the item's marks in root and below, once it's no longer there
+function Fresh.Unmark(itemID, root)
+    for path, items in pairs(Fresh.paths) do
+        if Fresh.Under(path, root) then
+            items[itemID] = nil
+            if not next(items) then Fresh.paths[path] = nil end
+        end
+    end
+end
+
+-- The marked path the category being viewed shows the item for. All items doesn't count as seeing it.
+function Fresh.ItemPath(itemID, cat)
+    if cat == ALL then return end
+    for path, items in pairs(Fresh.paths) do
+        if items[itemID] and Fresh.Under(path, cat) then return path end
+    end
+end
+
+-- Whether a tree node glows (marked itself, or folded over marked ones), and whether to pulse it now
+function Fresh.Node(path, folded)
+    local found, pulse = false, false
+    for p in pairs(Fresh.paths) do
+        if p == path or (folded and (path == ALL or Fresh.Under(p, path))) then
+            found = true
+            if Fresh.pulse[p] then Fresh.pulse[p], pulse = nil, true end
+        end
+    end
+    return found, pulse
+end
+
+-- Marks shown in the list count as seen once you move on to another category or close the window
+function Fresh.Seen(itemID, path)
+    Fresh.seen[path] = Fresh.seen[path] or {}
+    Fresh.seen[path][itemID] = true
+end
+
+function Fresh.Forget()
+    for path, items in pairs(Fresh.seen) do
+        local marked = Fresh.paths[path]
+        if marked then
+            for itemID in pairs(items) do marked[itemID] = nil end
+            if not next(marked) then Fresh.paths[path] = nil end
+        end
+    end
+    wipe(Fresh.seen)
+end
+
+-- Soft blue fill with a thin glowing edge, set apart from the sand selection. Pulses a few times, then stays.
+-- strength is its resting alpha, 0.6 unless given.
+local function FreshGlow(row, strength)
+    local blue, base = C.fresh, strength or 0.6
+    local fill = row:CreateTexture(nil, "BACKGROUND", nil, 2)
+    fill:SetAllPoints()
+    fill:SetColorTexture(blue[1], blue[2], blue[3], 0.22)
+    local parts = { fill }
+    for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
+        local edge = row:CreateTexture(nil, "ARTWORK")
+        edge:SetColorTexture(blue[1], blue[2], blue[3], 0.75)
+        if side == "TOP" or side == "BOTTOM" then
+            edge:SetPoint(side .. "LEFT")
+            edge:SetPoint(side .. "RIGHT")
+            edge:SetHeight(1)
+        else
+            edge:SetPoint("TOP" .. side)
+            edge:SetPoint("BOTTOM" .. side)
+            edge:SetWidth(1)
+        end
+        parts[#parts + 1] = edge
+    end
+    for _, part in ipairs(parts) do
+        part:SetAlpha(base)
+        part:Hide()
+        part.anim = part:CreateAnimationGroup()
+        local fade = part.anim:CreateAnimation("Alpha")
+        fade:SetFromAlpha(base)
+        fade:SetToAlpha(1)
+        fade:SetDuration(0.35)
+        fade:SetSmoothing("IN_OUT")
+        part.anim:SetLooping("BOUNCE")
+        -- Three pulses (each one there and back), then steady
+        part.anim:SetScript("OnPlay", function(self) self.loops = 0 end)
+        part.anim:SetScript("OnLoop", function(self)
+            self.loops = self.loops + 1
+            if self.loops >= 6 then self:Stop() end
+        end)
+    end
+    local glow = {}
+    function glow:SetShown(on)
+        for _, part in ipairs(parts) do
+            part:SetShown(on)
+            if not on then part.anim:Stop() end
+        end
+    end
+    function glow:Pulse()
+        for _, part in ipairs(parts) do part.anim:Play() end
+    end
+    return glow
+end
+
+-- A category reset makes every mark stale
+function MM:ResetFreshMarks()
+    wipe(Fresh.paths)
+    wipe(Fresh.seen)
+    wipe(Fresh.pulse)
+    wipe(Fresh.pulseItems)
+end
+
+-- Category changes in chat ----------------------------------------------------
+-- Every drop or remove says where the item is now, with an [Undo] link. Undo puts the item's categories
+-- back as they were, as long as nothing has changed them since.
+
+local Changes = { list = {}, n = 0 }
+
+local function SameSet(a, b)
+    for k in pairs(a) do if not b[k] then return false end end
+    for k in pairs(b) do if not a[k] then return false end end
+    return true
+end
+
+function Changes.Snapshot(itemID)
+    local copy = {}
+    for path in pairs(MM.db.itemCats[itemID] or {}) do copy[path] = true end
+    return copy
+end
+
+-- Its categories and holidays, or Uncategorized
+function Changes.Where(itemID)
+    local now = SortedPaths(MM.db.itemCats[itemID] or {})
+    for holiday in pairs(MM:ItemHolidayPaths(itemID) or {}) do now[#now + 1] = "Holidays/" .. holiday end
+    if #now == 0 then now[1] = UNCAT end
+    return now
+end
+
+function Changes.Names(paths)
+    local names = {}
+    for i, path in ipairs(paths) do
+        names[i] = path == UNCAT and "Uncategorized" or (path:gsub("/", " > "))
+    end
+    return table.concat(names, ", ")
+end
+
+function Changes.ItemText(itemID)
+    local item = MM.db.items[itemID]
+    return item and (item.link or item.name) or "Item"
+end
+
+-- verb is "added to" or "removed from"; before is the item's categories before the change
+function Changes.Report(itemID, verb, path, before)
+    Changes.n = Changes.n + 1
+    Changes.list[Changes.n] = { itemID = itemID, before = before, after = Changes.Snapshot(itemID) }
+    print(("|cffccb084Merchant Map:|r %s %s %s. Now in %s. %s"):format(Changes.ItemText(itemID), verb,
+        path:match("[^/]+$"), Changes.Names(Changes.Where(itemID)), MM:ChatLink("undo", Changes.n, "Undo")))
+end
+
+MM:OnChatLink("undo", function(arg)
+    local id = tonumber(arg)
+    local change = id and Changes.list[id]
+    if not change then return end
+    local itemID = change.itemID
+    if not SameSet(Changes.Snapshot(itemID), change.after) then
+        print(("|cffccb084Merchant Map:|r %s has been moved again since, so that can't be undone."):format(Changes.ItemText(itemID)))
+        return
+    end
+    Changes.list[id] = nil
+    -- Marked where it goes back to, unmarked where it leaves
+    for path in pairs(change.after) do
+        if not change.before[path] then Fresh.Unmark(itemID, path) end
+    end
+    MM.db.itemCats[itemID] = next(change.before) and change.before or nil
+    if next(change.before) then Fresh.Unmark(itemID, UNCAT) end
+    for _, path in ipairs(Changes.Where(itemID)) do
+        if not change.after[path] then Fresh.Mark(itemID, path) end
+    end
+    countsDirty = true
+    MM:RefreshList()
+    print(("|cffccb084Merchant Map:|r Undone. %s is back in %s."):format(Changes.ItemText(itemID),
+        Changes.Names(Changes.Where(itemID))))
+end)
+
+-- Where the item you clicked lives: its categories and holidays (or Uncategorized), or the folded
+-- node hiding them, glow faintly in the tree
+local function HomeNode(path, folded)
+    if type(selected) ~= "number" or not MM.db.items[selected] then return false end
+    local homes = {}
+    for p in pairs(MM.db.itemCats[selected] or {}) do homes[#homes + 1] = p end
+    for holiday in pairs(MM:ItemHolidayPaths(selected) or {}) do homes[#homes + 1] = "Holidays/" .. holiday end
+    if #homes == 0 then homes[1] = UNCAT end
+    for _, p in ipairs(homes) do
+        if p == path or (folded and (path == ALL or Fresh.Under(p, path))) then return true end
+    end
+    return false
+end
+
+-- Drawing -----------------------------------------------------------------
+
+local function DrawTree()
+    treeOffset = math.max(0, math.min(treeOffset, #nodes - TREE_ROWS))
+    for i, row in ipairs(treeRows) do
+        local node = i <= TREE_ROWS and nodes[treeOffset + i]
+        row.divider:SetShown(node and node.divider == true)
+        row:EnableMouse(not (node and node.divider))
+        if node and node.divider then
+            row.path = nil
+            row.toggle:Hide()
+            row.icon:SetTexture(nil)
+            row.label:SetText("")
+            row.count:SetText("")
+            row.sel:Hide()
+            row.glow:SetShown(false)
+            row.home:SetShown(false)
+            row:Show()
+        elseif node then
+            row.path = node.path
+            row.toggle:SetPoint("LEFT", 2 + node.depth * 12, 0)
+            row.toggle:SetShown(node.kids == true)
+            row.toggle:SetText(MM.db.collapsed[node.path] and "+" or "-")
+            row.label:SetText(node.label)
+            row.icon:SetTexture(node.path == ALL and ICONS .. "INV_Misc_Bag_08"
+                or node.path == UNCAT and 134400 or CategoryIcon(node.path))
+            if MM:IsCategory(node.path) then
+                row.label:SetTextColor(CategoryColor(node.path, node.level or node.depth))
+            else
+                row.label:SetTextColor(ACCENT[1], ACCENT[2], ACCENT[3])
+            end
+            row.count:SetText(counts[node.path] or "")
+            row.sel:SetShown(node.path == category)
+            local folded = node.kids and MM.db.collapsed[node.path]
+            local glows, pulse = Fresh.Node(node.path, folded)
+            row.glow:SetShown(glows)
+            if pulse then row.glow:Pulse() end
+            row.home:SetShown(not glows and HomeNode(node.path, folded))
+            row:Show()
+        else
+            row.path = nil
+            row:Hide()
+        end
+    end
+    UpdateScrollbar(tree, treeOffset, #nodes, TREE_ROWS)
+    -- Only categories you made can be renamed or deleted
+    local editable = MM:IsCategory(category) and not IsVirtual(category) and MM:IsUserCategory(category)
+    renameBtn:SetEnabled(editable)
+    deleteBtn:SetEnabled(editable)
+end
+
+local Row_Hover -- defined with the item rows below
+
+local function DrawRows()
+    offset = math.max(0, math.min(offset, #results - ROWS))
+    local soldKey = selected == nearestItems.id and nearestItems.key
+    local cat = ActiveCategory()
+    for i, row in ipairs(rows) do
+        local itemID = i <= ROWS and results[offset + i]
+        local group = IsGroup(itemID)
+        local npc = itemID and not group and IsService(itemID) and MM.services[itemID]
+        local item = itemID and not npc and not group and MM.db.items[itemID]
+        local freshPath = item and Fresh.ItemPath(itemID, cat)
+        row.fresh:SetShown(freshPath and true or false)
+        if freshPath then
+            Fresh.Seen(itemID, freshPath)
+            if Fresh.pulseItems[itemID] then
+                Fresh.pulseItems[itemID] = nil
+                row.fresh:Pulse()
+            end
+        end
+        if itemID == nearestItems.id then
+            local vendor = nearestItems.key and MM.db.vendors[nearestItems.key]
+            row.itemID = itemID
+            row.icon:SetTexture(nearestItems.icon or 134400)
+            row.name:SetText(nearestItems.label)
+            row.name:SetTextColor(ACCENT[1], ACCENT[2], ACCENT[3])
+            row.info:SetText(vendor and MM:ZoneName(vendor) or "Not on this continent")
+            row.sel:SetShown(itemID == selected)
+            row:Show()
+        elseif group then
+            local path = itemID:sub(3)
+            local key = IsNearest(itemID) and ServiceKey(itemID)
+            local closest = key and MM.services[key]
+            row.itemID = itemID
+            row.icon:SetTexture(groupIcons[path] or 134400)
+            row.name:SetText(GroupLabel(itemID))
+            row.name:SetTextColor(ACCENT[1], ACCENT[2], ACCENT[3])
+            if not IsNearest(itemID) then
+                row.info:SetText(groupSizes[path] .. " NPCs")
+            elseif not closest then
+                row.info:SetText("Not on this continent")
+            else
+                row.info:SetText(MM:ZoneName(closest))
+            end
+            row.sel:SetShown(itemID == selected)
+            row:Show()
+        elseif npc then
+            row.itemID = itemID
+            row.icon:SetTexture(npc.icon or 134400)
+            row.name:SetText(npc.name .. (npc.title and (" |cff8a8a8a<" .. npc.title .. ">|r") or ""))
+            row.name:SetTextColor(0.55, 0.85, 0.9)
+            row.info:SetText(MM:ZoneName(npc))
+            row.sel:SetShown(itemID == selected)
+            row:Show()
+        elseif item then
+            if not item.quality then item.quality = C_Item.GetItemQualityByID(itemID) end
+            local color = ITEM_QUALITY_COLORS[item.quality or 1] or ITEM_QUALITY_COLORS[1]
+            row.itemID = itemID
+            row.icon:SetTexture(item.icon or 134400)
+            row.name:SetText(item.name)
+            row.name:SetTextColor(color.r, color.g, color.b)
+
+            local count, onlyKey = 0, nil
+            for key in pairs(item.vendors) do count, onlyKey = count + 1, key end
+            row.info:SetText(count == 1 and MM:ZoneName(MM.db.vendors[onlyKey] or {}) or (count .. " vendors"))
+            row.sel:SetShown(itemID == selected)
+            row:Show()
+        else
+            row.itemID = nil
+            row:Hide()
+        end
+        row.sold:SetShown(item and soldKey and item.vendors[soldKey] and true or false)
+    end
+    UpdateScrollbar(list, offset, #results, ROWS)
+    -- Rows shift under a still cursor when scrolling or refreshing; re-aim the targeting
+    for _, row in ipairs(rows) do
+        if MM:IsTargetOwner(row) then Row_Hover(row) end
+    end
+end
+
+function MM:RefreshList()
+    if refreshTimer then
+        refreshTimer:Cancel()
+        refreshTimer = nil
+    end
+    if not panel:IsShown() then return end
+    local db = self.db
+    local query, low, high, usable = S.ParseQuery(strlower(strtrim(box:GetText())))
+    local tokens = S.Tokens(query)
+    S.tokens = tokens
+
+    if category ~= ALL and category ~= UNCAT and not db.categories[category] and not ServicePaths()[category]
+        and not MM:HolidayPaths()[category] then
+        category = ALL
+    end
+    if treeDirty then
+        BuildTree()
+        treeDirty = false
+    end
+    if countsDirty then
+        CountItems()
+        countsDirty = false
+    end
+
+    local cat = ActiveCategory()
+    local scope = cat == ALL and "all items" or cat == UNCAT and "Uncategorized" or cat:match("[^/]+$")
+    placeholder:SetText("Search " .. scope .. "...")
+
+    wipe(results)
+    for itemID in pairs(db.items) do
+        if self:ItemInCategory(itemID, cat)
+            and (query == "" or S.Matches(itemID, tokens))
+            and (not low or S.LevelOK(itemID, low, high))
+            and (not usable or S.Usable(itemID)) then
+            results[#results + 1] = itemID
+        end
+    end
+    -- Service NPCs show up when searching or browsing Services, but not under level filters
+    if not low and (query ~= "" or IsVirtual(cat)) then
+        BuildGroups()
+        local paths = {}
+        for key, npc in pairs(MM.services) do
+            if ServiceInCategory(npc, cat)
+                and (query == "" or S.ServiceMatches(npc, tokens)) then
+                results[#results + 1] = key
+                for _, path in ipairs(npc.paths) do paths[path] = true end
+            end
+        end
+        -- An "All" row for each matching category with more than one NPC, and "Nearest" when searching
+        for path in pairs(paths) do
+            if groupSizes[path] > 1 and ServiceInCategory({ paths = { path } }, cat)
+                and S.ServiceMatches({ paths = { path }, name = "" }, tokens) then
+                results[#results + 1] = "a:" .. path
+                if query ~= "" then results[#results + 1] = "n:" .. path end
+            end
+        end
+    end
+    -- Items first, then group rows, then service NPCs, each alphabetical
+    local function Rank(id) return IsGroup(id) and 1 or IsService(id) and 2 or 0 end
+    table.sort(results, function(a, b)
+        local ra, rb = Rank(a), Rank(b)
+        if ra ~= rb then return ra < rb end
+        local na, nb = SortName(a), SortName(b)
+        if na == nb then return tostring(a) < tostring(b) end
+        return na < nb
+    end)
+
+    -- A search or category with several items gets "Nearest vendor for <search or category>" on top
+    local ids = nearestItems.ids
+    wipe(ids)
+    for _, id in ipairs(results) do
+        if not IsService(id) then ids[#ids + 1] = id end
+    end
+    nearestItems.key = nil
+    if (query ~= "" or cat ~= ALL) and #ids > 1 then
+        local word = query ~= "" and query or scope
+        nearestItems.key = self:ClosestVendorFor(ids)
+        nearestItems.label = query ~= "" and ('Nearest vendor for "' .. query .. '"') or ("Nearest vendor for " .. scope)
+        nearestItems.what = query ~= "" and "search" or "category"
+        nearestItems.arrow = (word:gsub("^%l", strupper)) -- the item line on the arrow
+        nearestItems.icon = db.items[ids[1]].icon
+        -- Once picked, the items that vendor sells come right under it
+        local key = selected == nearestItems.id and nearestItems.key
+        if key then
+            local sold, rest = {}, {}
+            for _, id in ipairs(results) do
+                local list = not IsService(id) and db.items[id].vendors[key] and sold or rest
+                list[#list + 1] = id
+            end
+            wipe(results)
+            for _, id in ipairs(sold) do results[#results + 1] = id end
+            for _, id in ipairs(rest) do results[#results + 1] = id end
+        end
+        table.insert(results, 1, nearestItems.id)
+    elseif selected == nearestItems.id then
+        selected = nil
+    end
+
+    -- Pin the selected item, or everything shown when searching or browsing a category
+    local source = selected and { selected } or ((query ~= "" or low or usable or cat ~= ALL) and results) or nil
+    if source then
+        self.activeVendors = {}
+        for _, id in ipairs(source) do
+            if id == nearestItems.id then
+                -- Selected, it pins only the closest vendor, with the matched items it sells
+                local key = selected == id and nearestItems.key
+                if key then
+                    local sold = {}
+                    for _, itemID in ipairs(ids) do
+                        if db.items[itemID].vendors[key] then sold[#sold + 1] = itemID end
+                    end
+                    self.activeVendors[key] = sold
+                end
+            elseif IsGroup(id) and not IsNearest(id) then
+                -- An "All" row pins the whole category
+                for key in pairs(groups[id:sub(3)] or {}) do
+                    self.activeVendors[key] = self.activeVendors[key] or {}
+                end
+            elseif IsService(id) then
+                -- A service NPC is pinned itself, a "Nearest" row pins the closest one
+                local key = ServiceKey(id)
+                if key then self.activeVendors[key] = self.activeVendors[key] or {} end
+            else
+                for key in pairs(db.items[id].vendors) do
+                    local ids = self.activeVendors[key] or {}
+                    self.activeVendors[key] = ids
+                    ids[#ids + 1] = id
+                end
+            end
+        end
+    else
+        self.activeVendors = nil
+    end
+    self:RefreshMap()
+
+    local vendorCount = 0
+    for _ in pairs(self.activeVendors or {}) do vendorCount = vendorCount + 1 end
+    local count = #results - (results[1] == nearestItems.id and 1 or 0)
+    status:SetText(("%d items   %d vendors on map"):format(count, vendorCount))
+
+    if not next(db.items) then
+        empty:SetText("Open a vendor to start recording.")
+    elseif #results == 0 then
+        empty:SetText("No matches.")
+    else
+        empty:SetText("")
+    end
+
+    DrawTree()
+    DrawRows()
+end
+
+-- Scans and auto-categorizing can fire in bursts, so refresh at most every quarter second
+local dataTimer
+local function FlushData()
+    dataTimer = nil
+    if panel:IsShown() then
+        MM:RefreshList()
+    else
+        MM:RefreshMap()
+    end
+end
+
+function MM:OnDataChanged()
+    MarkDirty()
+    servicePaths = nil -- a newly found NPC can bring a new Services category
+    S.ResetNames()
+    if not dataTimer then dataTimer = C_Timer.NewTimer(0.25, FlushData) end
+end
+
+-- Auto-categorizing only changes the tree and counts, never pins, so a closed window needs nothing
+function MM:OnCategoriesChanged()
+    MarkDirty()
+    if not dataTimer and panel:IsShown() then dataTimer = C_Timer.NewTimer(0.25, FlushData) end
+end
+
+local InCombat = W.InCombat
+
+function MM:Toggle()
+    if panel:IsShown() then
+        panel:Hide()
+    elseif not InCombat() then
+        panel:Show()
+    end
+end
+
+-- /mm <words>: opens the window searching all items and services for them
+function MM:Search(text)
+    if InCombat() then return end
+    panel:Show()
+    if category ~= ALL then
+        category, offset = ALL, 0
+        MarkDirty()
+    end
+    box:SetText(text)
+    MM:RefreshList()
+
+    -- A search for one kind of service goes straight to the nearest one, like clicking its "Nearest" row.
+    -- A search that finds a single item goes to its nearest vendor, like clicking the item.
+    local nearest, items = nil, {}
+    for _, id in ipairs(results) do
+        if IsNearest(id) then
+            if nearest then return end -- several kinds match, so let the player pick
+            nearest = id
+        elseif not IsService(id) then
+            items[#items + 1] = id
+        end
+    end
+    local key = nearest and ServiceKey(nearest)
+    if key then
+        selected = nearest
+        MM:ShowServiceOnMap(key)
+    elseif not nearest and #items == 1 then
+        selected = items[1]
+        MM:ShowItemOnMap(items[1])
+    else
+        return
+    end
+    MM:RefreshList()
+end
+
+-- Category tree -----------------------------------------------------------
+
+local function ExpandTo(path)
+    local parent = MM:ParentPath(path)
+    while parent do
+        MM.db.collapsed[parent] = nil
+        parent = MM:ParentPath(parent)
+    end
+end
+
+local function SelectCategory(path)
+    Fresh.Forget()
+    if path ~= category or selected then MM:ClearMinimapVendor() end
+    category, selected, offset = path, nil, 0
+    box:SetText("")
+    MM:RefreshList()
+end
+
+local function Node_OnClick(self)
+    if self.path then SelectCategory(self.path) end
+end
+
+local function Toggle_OnClick(self)
+    local path = self:GetParent().path
+    MM.db.collapsed[path] = not MM.db.collapsed[path] or nil
+    treeDirty = true
+    MM:RefreshList()
+end
+
+local function CreateTreeRow(i)
+    local row = CreateFrame("Button", nil, tree)
+    row:SetHeight(ROW_H)
+    row:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
+    row:SetPoint("RIGHT", -(SCROLL_W + 4), 0)
+
+    local hl = row:CreateTexture()
+    hl:SetColorTexture(1, 1, 1, 0.06)
+    row:SetHighlightTexture(hl)
+
+    row.sel = row:CreateTexture(nil, "BACKGROUND")
+    row.sel:SetAllPoints()
+    row.sel:SetColorTexture(ACCENT[1], ACCENT[2], ACCENT[3], 0.2)
+
+    -- Line between the item categories and Services
+    row.divider = row:CreateTexture(nil, "ARTWORK")
+    row.divider:SetHeight(1)
+    row.divider:SetPoint("LEFT", 6, 0)
+    row.divider:SetPoint("RIGHT", -6, 0)
+    row.divider:SetColorTexture(BORDER[1], BORDER[2], BORDER[3], 1)
+    row.divider:Hide()
+
+    -- Shown while an item is dragged over the row
+    row.drop = CreateFrame("Frame", nil, row)
+    row.drop:SetAllPoints()
+    row.drop:Hide()
+    Fill(row.drop, ACCENT, 0.25)
+    Outline(row.drop, ACCENT)
+
+    row.glow = FreshGlow(row)
+    -- Fainter and steady: where the clicked item lives
+    row.home = FreshGlow(row, 0.3)
+
+    row.toggle = CreateFrame("Button", nil, row)
+    row.toggle:SetSize(16, ROW_H)
+    row.toggle:SetNormalFontObject("MM_GameFontDisableLarge")
+    row.toggle:SetHighlightFontObject("MM_GameFontNormalLarge")
+    row.toggle:SetText("-")
+    row.toggle:SetScript("OnClick", Toggle_OnClick)
+
+    row.count = row:CreateFontString(nil, "OVERLAY", "MM_GameFontDisableSmall")
+    row.count:SetPoint("RIGHT", -4, 0)
+
+    row.icon = row:CreateTexture(nil, "ARTWORK")
+    row.icon:SetSize(14, 14)
+    row.icon:SetPoint("LEFT", row.toggle, "RIGHT", 1, 0)
+    row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    row.label = row:CreateFontString(nil, "OVERLAY", "MM_GameFontHighlightSmall")
+    row.label:SetPoint("LEFT", row.icon, "RIGHT", 4, 0)
+    row.label:SetPoint("RIGHT", row.count, "LEFT", -4, 0)
+    row.label:SetJustifyH("LEFT")
+    row.label:SetWordWrap(false)
+
+    row:SetScript("OnClick", Node_OnClick)
+    return row
+end
+
+local function OpenEditor(mode, text)
+    editMode = mode
+    newBtn:Hide()
+    renameBtn:Hide()
+    deleteBtn:Hide()
+    editor:SetText(text)
+    editor:Show()
+    editor:SetFocus()
+    editor:SetCursorPosition(#text)
+end
+
+local function CloseEditor()
+    editMode = nil
+    editor:ClearFocus()
+    editor:Hide()
+    local full = not MM.db.compact
+    newBtn:SetShown(full)
+    renameBtn:SetShown(full)
+    deleteBtn:SetShown(full)
+end
+
+newBtn:SetScript("OnClick", function()
+    OpenEditor("new", MM:IsCategory(category) and (category .. "/") or "")
+end)
+
+renameBtn:SetScript("OnClick", function()
+    OpenEditor("rename", category)
+end)
+
+deleteBtn:SetScript("OnClick", function()
+    if not IsShiftKeyDown() then return end
+    MM:DeleteCategory(category)
+    MarkDirty()
+    SelectCategory(ALL)
+end)
+
+editor:SetScript("OnEnterPressed", function(self)
+    local text = self:GetText()
+    local path
+    if editMode == "new" then
+        path = MM:AddUserCategory(text)
+    elseif editMode == "rename" then
+        path = MM:RenameCategory(category, text)
+    end
+    CloseEditor()
+    if path then
+        MarkDirty()
+        ExpandTo(path)
+        SelectCategory(path)
+    end
+end)
+editor:SetScript("OnEscapePressed", CloseEditor)
+editor:SetScript("OnEditFocusLost", CloseEditor)
+
+tree:SetScript("OnMouseWheel", function(_, delta)
+    treeOffset = treeOffset - delta * 3
+    DrawTree()
+end)
+tree.onScroll = function(pos)
+    treeOffset = pos
+    DrawTree()
+end
+
+-- Item rows ---------------------------------------------------------------
+
+-- Where row tooltips go (set in the options): beside the window, or at the cursor.
+-- Below and right-aligned by default, so comparison tooltips don't cover it.
+local TOOLTIP_POINTS = {
+    top = { "BOTTOMRIGHT", "TOPRIGHT", 0, 4 },
+    left = { "TOPRIGHT", "TOPLEFT", -4, 0 },
+    right = { "TOPLEFT", "TOPRIGHT", 4, 0 },
+    below = { "TOPRIGHT", "BOTTOMRIGHT", 0, -4 },
+}
+
+local function TooltipAnchor()
+    return MM.db.tooltipAnchor == "mouse" and "ANCHOR_CURSOR" or "ANCHOR_NONE"
+end
+
+local function PlaceTooltip()
+    if MM.db.tooltipAnchor == "mouse" then return end
+    local p = TOOLTIP_POINTS[MM.db.tooltipAnchor] or TOOLTIP_POINTS.below
+    GameTooltip:ClearAllPoints()
+    GameTooltip:SetPoint(p[1], panel, p[2], p[3], p[4])
+end
+
+-- The closest vendor and which of the matched items they sell
+local function NearestItemsTooltip(self)
+    local key = MM:ClosestVendorFor(nearestItems.ids)
+    local vendor = key and MM.db.vendors[key]
+    GameTooltip:SetOwner(self, TooltipAnchor())
+    PlaceTooltip()
+    GameTooltip:AddLine(nearestItems.label, ACCENT[1], ACCENT[2], ACCENT[3])
+    GameTooltip:AddLine(("The closest vendor selling any of the %d items in this %s. "
+        .. "Search more precisely to narrow it down."):format(#nearestItems.ids, nearestItems.what), 0.6, 0.6, 0.6, true)
+    GameTooltip:AddLine(" ")
+    if not vendor then
+        GameTooltip:AddLine("No vendor on this continent", 0.6, 0.6, 0.6)
+        return GameTooltip:Show()
+    end
+    GameTooltip:AddLine(vendor.name, 1, 1, 1)
+    GameTooltip:AddLine(MM:LocationText(vendor), 0.6, 0.6, 0.6)
+    GameTooltip:AddLine(" ")
+    local sold = {}
+    for _, itemID in ipairs(nearestItems.ids) do
+        local offer = MM.db.items[itemID].vendors[key]
+        if offer then sold[#sold + 1] = itemID end
+    end
+    for i, itemID in ipairs(sold) do
+        if i > MAX_TOOLTIP_VENDORS then
+            GameTooltip:AddLine(("... and %d more"):format(#sold - MAX_TOOLTIP_VENDORS), 0.6, 0.6, 0.6)
+            break
+        end
+        local item = MM.db.items[itemID]
+        local color = ITEM_QUALITY_COLORS[item.quality or 1] or ITEM_QUALITY_COLORS[1]
+        GameTooltip:AddDoubleLine("|T" .. (item.icon or 134400) .. ":0|t " .. (item.name or "?"),
+            MM:PriceText(item.vendors[key]), color.r, color.g, color.b, 1, 1, 1)
+    end
+    GameTooltip:Show()
+end
+
+local function Row_OnEnter(self)
+    if self.itemID == nearestItems.id then
+        if not dragIcon:IsShown() then NearestItemsTooltip(self) end
+        return
+    end
+    if IsGroup(self.itemID) and not IsNearest(self.itemID) then
+        GameTooltip:SetOwner(self, TooltipAnchor())
+        PlaceTooltip()
+        GameTooltip:AddLine(GroupLabel(self.itemID), ACCENT[1], ACCENT[2], ACCENT[3])
+        GameTooltip:AddLine(("%d NPCs"):format(groupSizes[self.itemID:sub(3)] or 0), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine("Click to show them all on the map and target the closest", 0.5, 0.5, 0.5)
+        GameTooltip:Show()
+        return
+    end
+    if IsService(self.itemID) then
+        local key = ServiceKey(self.itemID)
+        if not key or dragIcon:IsShown() then return end
+        MM:ShowServiceTooltip(self, key, nil, TooltipAnchor())
+        PlaceTooltip()
+        return
+    end
+    local item = MM.db.items[self.itemID]
+    if not item or dragIcon:IsShown() then return end
+    GameTooltip:SetOwner(self, TooltipAnchor())
+    PlaceTooltip()
+    GameTooltip:SetItemByID(self.itemID)
+    local reason = S.MatchReason(self.itemID)
+    if reason then
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine(reason)
+    end
+    GameTooltip:AddLine(" ")
+    GameTooltip:AddLine("Sold by:", ACCENT[1], ACCENT[2], ACCENT[3])
+
+    local keys, where = {}, {}
+    for key in pairs(item.vendors) do
+        local vendor = MM.db.vendors[key]
+        if vendor then
+            keys[#keys + 1] = key
+            where[key] = MM:LocationText(vendor)
+        end
+    end
+    -- Vendors that didn't have it in stock at the last visit go together at the bottom
+    table.sort(keys, function(a, b)
+        local lateA, lateB = item.vendors[a].notSeen or false, item.vendors[b].notSeen or false
+        if lateA ~= lateB then return lateB end
+        return where[a] < where[b]
+    end)
+    local lateShown
+    for i, key in ipairs(keys) do
+        if i > MAX_TOOLTIP_VENDORS then
+            GameTooltip:AddLine(("... and %d more"):format(#keys - MAX_TOOLTIP_VENDORS), 0.6, 0.6, 0.6)
+            break
+        end
+        local vendor, offer = MM.db.vendors[key], item.vendors[key]
+        local text = vendor.name .. " |cff999999" .. where[key] .. "|r"
+        if offer.notSeen then
+            if not lateShown then
+                lateShown = true
+                GameTooltip:AddLine("Not in stock at last visit:", 0.6, 0.6, 0.6)
+            end
+            GameTooltip:AddLine(text, 0.7, 0.7, 0.7)
+        else
+            GameTooltip:AddDoubleLine(text, MM:PriceText(offer), 1, 1, 1, 1, 1, 1)
+        end
+    end
+
+    local set = MM.db.itemCats[self.itemID]
+    if set then
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("Categories:", ACCENT[1], ACCENT[2], ACCENT[3])
+        for _, path in ipairs(SortedPaths(set)) do
+            GameTooltip:AddLine(path, 0.8, 0.8, 0.8)
+        end
+    end
+    GameTooltip:Show()
+end
+
+-- Small "Remove from <category>" button shown at the cursor on right-click
+local removeBtn = CreateFrame("Button", nil, panel)
+removeBtn:SetHeight(22)
+removeBtn:SetFrameStrata("TOOLTIP")
+removeBtn:Hide()
+SkinButton(removeBtn)
+removeBtn.label = removeBtn:CreateFontString(nil, "OVERLAY", "MM_GameFontHighlightSmall")
+removeBtn.label:SetPoint("CENTER")
+
+removeBtn:SetScript("OnClick", function(self)
+    self:Hide()
+    local itemID, from = self.itemID, ActiveCategory()
+    local before = Changes.Snapshot(itemID)
+    MM:UnassignItem(itemID, from)
+    Fresh.Unmark(itemID, from)
+    -- Marked where it is now, and said in chat
+    for _, path in ipairs(Changes.Where(itemID)) do Fresh.Mark(itemID, path) end
+    Changes.Report(itemID, "removed from", from, before)
+
+    countsDirty = true
+    if selected == itemID then selected = nil end
+    MM:RefreshList()
+end)
+-- Closes on any click elsewhere, or when the window closes
+removeBtn:SetScript("OnShow", function(self) self:RegisterEvent("GLOBAL_MOUSE_DOWN") end)
+removeBtn:SetScript("OnHide", function(self) self:UnregisterEvent("GLOBAL_MOUSE_DOWN") end)
+removeBtn:SetScript("OnEvent", function(self)
+    if not self:IsMouseOver() then self:Hide() end
+end)
+
+local function ShowRemoveButton(itemID)
+    local x, y = GetCursorPosition()
+    local scale = removeBtn:GetEffectiveScale()
+    removeBtn.itemID = itemID
+    removeBtn.label:SetText("Remove from " .. ActiveCategory():match("[^/]+$"))
+    removeBtn:SetWidth(removeBtn.label:GetStringWidth() + 20)
+    removeBtn:ClearAllPoints()
+    removeBtn:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x / scale + 4, y / scale - 4)
+    removeBtn:Show()
+end
+
+local function Row_OnClick(self, button)
+    local itemID = self.itemID
+    if not itemID then return end
+
+    -- Service NPCs and the nearest vendor row: click to show and mark them, right-click to clear
+    if IsService(itemID) then
+        if IsModifiedClick() then return end
+        if button == "RightButton" or selected == itemID then
+            selected = nil
+            MM:ClearMinimapVendor()
+            MM:RefreshList()
+            return
+        else
+            selected = itemID
+            local key = ServiceKey(itemID)
+            if itemID == nearestItems.id then
+                MM:ShowVendorForItems(nearestItems.ids, nearestItems.arrow)
+            elseif IsGroup(itemID) and not IsNearest(itemID) then
+                MM:ShowServicesOnMap(groups[itemID:sub(3)])
+            elseif key then
+                MM:ShowServiceOnMap(key)
+            end
+        end
+        MM:RefreshList()
+        return
+    end
+
+    if IsModifiedClick() then
+        local link = MM.db.items[itemID].link or select(2, C_Item.GetItemInfo(itemID))
+        if link then HandleModifiedItemClick(link) end
+        return
+    end
+
+    if button == "RightButton" then
+        if MM:IsCategory(ActiveCategory()) and not IsVirtual(ActiveCategory()) then
+            ShowRemoveButton(itemID)
+            return
+        end
+        selected = nil
+        MM:ClearMinimapVendor()
+        MM:RefreshList()
+        return
+    elseif selected == itemID then
+        selected = nil
+        MM:ClearMinimapVendor()
+        MM:RefreshList()
+        return
+    else
+        selected = itemID
+        MM:ShowItemOnMap(itemID)
+    end
+    MM:RefreshList()
+end
+
+-- Compact view has no categories to drop on, so dragging a row moves the window instead.
+-- It stops on the release itself, like dropping an item does.
+local movingPanel
+local moveWatch = CreateFrame("Frame")
+moveWatch:Hide()
+
+local function StopMovingPanel()
+    if not movingPanel then return end
+    movingPanel = nil
+    moveWatch:Hide()
+    panel:GetScript("OnDragStop")(panel)
+    MM:EndTargetDrag()
+end
+moveWatch:SetScript("OnUpdate", function()
+    if not IsMouseButtonDown("LeftButton") then StopMovingPanel() end
+end)
+
+local function Row_OnDragStart(self)
+    if MM.db.compact then
+        movingPanel = true
+        GameTooltip:Hide()
+        panel:GetScript("OnDragStart")(panel)
+        moveWatch:Show()
+        return
+    end
+    if not self.itemID or IsService(self.itemID) then return end
+    GameTooltip:Hide()
+    local item = MM.db.items[self.itemID]
+    local color = ITEM_QUALITY_COLORS[item.quality or 1] or ITEM_QUALITY_COLORS[1]
+    dragIcon.itemID = self.itemID
+    dragIcon.tex:SetTexture(item.icon or 134400)
+    dragIcon.name:SetText(item.name)
+    dragIcon.name:SetTextColor(color.r, color.g, color.b)
+    dragIcon:Show()
+end
+
+-- The category row under the cursor that the item can go in
+local function DropTarget()
+    for _, node in ipairs(treeRows) do
+        if node:IsVisible() and node.path and MM:IsCategory(node.path) and not IsVirtual(node.path)
+            and node:IsMouseOver() then
+            return node
+        end
+    end
+end
+
+local dropRow
+local function SetDropRow(row)
+    if row == dropRow then return end
+    if dropRow then dropRow.drop:Hide() end
+    dropRow = row
+    if row then
+        row.drop:Show()
+        dragIcon.hint:SetText("Add to " .. row.path:match("[^/]+$"))
+    else
+        dragIcon.hint:SetText("Drop on a category")
+    end
+end
+
+dragIcon:SetScript("OnShow", function() dragIcon.hint:SetText("Drop on a category") end)
+dragIcon:SetScript("OnHide", function()
+    if dropRow then dropRow.drop:Hide() end
+    dropRow = nil
+end)
+-- Drops the item on the category under the cursor, if any. Runs on the release itself,
+-- whether or not the frame the drag started on hears about it.
+local function Drop()
+    local itemID, target = dragIcon.itemID, DropTarget()
+    dragIcon.itemID = nil
+    dragIcon:Hide()
+    MM:EndTargetDrag()
+    if itemID and target then
+        -- Only a real addition gets marked and reported; it's no longer Uncategorized either way
+        local before = Changes.Snapshot(itemID)
+        MM:AssignItem(itemID, target.path)
+        Fresh.Unmark(itemID, UNCAT)
+        if not before[target.path] then
+            Fresh.Mark(itemID, target.path)
+            Changes.Report(itemID, "added to", target.path, before)
+        end
+        countsDirty = true
+        MM:RefreshList()
+    end
+end
+
+dragIcon:SetScript("OnUpdate", function(self)
+    if not IsMouseButtonDown("LeftButton") then return Drop() end
+    local x, y = GetCursorPosition()
+    local scale = UIParent:GetEffectiveScale()
+    self:ClearAllPoints()
+    self:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / scale + 20, y / scale - 20)
+    SetDropRow(DropTarget())
+end)
+
+local function Row_OnDragStop()
+    if movingPanel then
+        StopMovingPanel()
+    elseif dragIcon.itemID then
+        Drop()
+    end
+end
+
+local function Row_Enter(self)
+    self.hover:Show()
+    Row_OnEnter(self)
+end
+
+local function Row_Leave(self)
+    self.hover:Hide()
+    GameTooltip:Hide()
+end
+
+-- A plain click also targets and skull-marks the item's closest vendor, which needs the
+-- secure targeting button laid over the row; it passes every other click and drag back here.
+function Row_Hover(self)
+    Row_Enter(self)
+    if not self.itemID then return end
+    -- Items target their closest vendor, service NPCs themselves
+    local vendor
+    if self.itemID == nearestItems.id then
+        local key = MM:ClosestVendorFor(nearestItems.ids)
+        vendor = key and MM.db.vendors[key]
+    elseif IsService(self.itemID) then
+        local key = ServiceKey(self.itemID)
+        vendor = key and MM.services[key]
+    else
+        local key = MM:ClosestVendorKey(self.itemID)
+        vendor = key and MM.db.vendors[key]
+    end
+    MM:AttachTargetButton(self, {
+        name = MM:TargetName(vendor) or false,
+        rightClick = true,
+        onEnter = Row_Enter,
+        onLeave = Row_Leave,
+        onClick = Row_OnClick,
+        onDragStart = Row_OnDragStart,
+        onDragStop = Row_OnDragStop,
+    })
+end
+
+local function CreateItemRow(i)
+    local row = CreateFrame("Button", nil, list)
+    row:SetHeight(ROW_H)
+    row:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
+    row:SetPoint("RIGHT", -(SCROLL_W + 4), 0)
+    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    row:RegisterForDrag("LeftButton")
+
+    -- Shown by hand, since the targeting button covers the row while hovered
+    row.hover = row:CreateTexture(nil, "BACKGROUND", nil, 1)
+    row.hover:SetAllPoints()
+    row.hover:SetColorTexture(1, 1, 1, 0.06)
+    row.hover:Hide()
+
+    row.sel = row:CreateTexture(nil, "BACKGROUND")
+    row.sel:SetAllPoints()
+    row.sel:SetColorTexture(ACCENT[1], ACCENT[2], ACCENT[3], 0.2)
+
+    -- Faint tint on items sold by the picked "Nearest vendor for" vendor
+    row.sold = row:CreateTexture(nil, "BACKGROUND", nil, -1)
+    row.sold:SetAllPoints()
+    row.sold:SetColorTexture(ACCENT[1], ACCENT[2], ACCENT[3], 0.07)
+
+    row.fresh = FreshGlow(row)
+
+    row.icon = row:CreateTexture(nil, "ARTWORK")
+    row.icon:SetSize(16, 16)
+    row.icon:SetPoint("LEFT", 4, 0)
+    row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    row.info = row:CreateFontString(nil, "OVERLAY", "MM_GameFontDisableSmall")
+    row.info:SetPoint("RIGHT", -4, 0)
+    row.info:SetJustifyH("RIGHT")
+
+    row.name = row:CreateFontString(nil, "OVERLAY", "MM_GameFontHighlightSmall")
+    row.name:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+    row.name:SetPoint("RIGHT", row.info, "LEFT", -8, 0)
+    row.name:SetJustifyH("LEFT")
+    row.name:SetWordWrap(false)
+
+    row:SetScript("OnEnter", Row_Hover)
+    row:SetScript("OnLeave", function(self)
+        if not MM:IsTargetOwner(self) then Row_Leave(self) end
+    end)
+    row:SetScript("OnClick", Row_OnClick)
+    row:SetScript("OnDragStart", Row_OnDragStart)
+    row:SetScript("OnDragStop", Row_OnDragStop)
+    return row
+end
+
+-- A quick mouse move can skip a row's leave, leaving its highlight and tooltip behind; clear them
+CreateFrame("Frame", nil, list):SetScript("OnUpdate", function()
+    for _, row in ipairs(rows) do
+        if row.hover:IsShown() and not row:IsMouseOver() then
+            row.hover:Hide()
+            if GameTooltip:IsOwned(row) then GameTooltip:Hide() end
+        end
+    end
+end)
+
+list:SetScript("OnMouseWheel", function(_, delta)
+    offset = offset - delta * 3
+    DrawRows()
+end)
+list.onScroll = function(pos)
+    offset = pos
+    DrawRows()
+end
+
+-- Panel -------------------------------------------------------------------
+
+-- Items whose required level was still loading show up once it arrives
+local levelEvents = CreateFrame("Frame")
+levelEvents:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+levelEvents:SetScript("OnEvent", function(_, _, itemID)
+    if not S.pending[itemID] then return end
+    S.pending[itemID] = nil
+    if panel:IsShown() and not refreshTimer then
+        refreshTimer = C_Timer.NewTimer(0.2, function() MM:RefreshList() end)
+    end
+end)
+
+SetTooltip(box, "Search item names and categories")
+
+-- Typing refreshes once the keys settle, instead of on every keystroke
+box:SetScript("OnTextChanged", function(self)
+    placeholder:SetShown(self:GetText() == "")
+    clear:SetShown(self:GetText() ~= "")
+    selected, offset = nil, 0
+    if refreshTimer then refreshTimer:Cancel() end
+    refreshTimer = C_Timer.NewTimer(0.12, function() MM:RefreshList() end)
+end)
+box:SetScript("OnEscapePressed", box.ClearFocus)
+box:SetScript("OnEnterPressed", box.ClearFocus)
+
+-- Row counts follow the window height; extra rows are created as it grows
+local function Relayout()
+    ROWS = math.max(1, math.floor(list:GetHeight() / ROW_H))
+    TREE_ROWS = math.max(1, math.floor(tree:GetHeight() / ROW_H))
+    for i = #rows + 1, ROWS do rows[i] = CreateItemRow(i) end
+    for i = #treeRows + 1, TREE_ROWS do treeRows[i] = CreateTreeRow(i) end
+    if panel:IsShown() then
+        DrawTree()
+        DrawRows()
+    end
+end
+list:SetScript("OnSizeChanged", Relayout)
+
+-- Every category starts folded the first time the window opens each session
+local foldedThisSession
+local function FoldAll()
+    local collapsed = MM.db.collapsed
+    wipe(collapsed)
+    for _, set in ipairs({ MM.db.categories, ServicePaths(), MM:HolidayPaths() }) do
+        for path in pairs(set) do
+            local parent = MM:ParentPath(path)
+            if parent then collapsed[parent] = true end
+        end
+    end
+    treeDirty = true
+end
+
+-- Full view <-> compact view: same list and search, compact hides everything else
+local fullOnly = { header, status, tree, newBtn, renameBtn, deleteBtn, hint }
+
+local function ApplyMode()
+    local compact = MM.db.compact
+    for _, f in ipairs(fullOnly) do f:SetShown(not compact) end
+    miniClose:SetShown(compact == true)
+    expandBtn:SetShown(compact == true)
+    box:ClearAllPoints()
+    list:ClearAllPoints()
+    if compact then
+        box:SetPoint("TOPLEFT", 6, -6)
+        box:SetPoint("RIGHT", expandBtn, "LEFT", -4, 0)
+        box:SetHeight(18)
+        list:SetPoint("TOPLEFT", box, "BOTTOMLEFT", 0, -6)
+        list:SetPoint("BOTTOMRIGHT", -6, 16)
+    else
+        box:SetPoint("TOPLEFT", 10, -30)
+        box:SetPoint("TOPRIGHT", -10, -30)
+        box:SetHeight(22)
+        list:SetPoint("TOPLEFT", tree, "TOPRIGHT", 8, 0)
+        list:SetPoint("BOTTOMRIGHT", -10, 26)
+    end
+end
+
+local function ApplySize()
+    local db = MM.db
+    local size = db.compact and (db.compactSize or DEFAULT_COMPACT) or (db.size or DEFAULT_FULL)
+    panel:SetSize(size[1], size[2])
+end
+
+local function SetCompact(on)
+    SaveGeometry()
+    MM.db.compact = on or nil
+    -- Keep the top left corner where it is while the size changes
+    local left, top = panel:GetLeft(), panel:GetTop()
+    panel:ClearAllPoints()
+    panel:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+    CloseEditor()
+    ApplyMode()
+    ApplySize()
+    SaveGeometry()
+    Relayout()
+    MM:RefreshList()
+end
+
+compactBtn:SetScript("OnClick", function() SetCompact(true) end)
+expandBtn:SetScript("OnClick", function() SetCompact(false) end)
+
+-- Window scale from the options, 75% to 150%, for the main window and the ones it opens
+tinsert(W.scaled, panel)
+
+function MM:SetWindowScale(scale)
+    self.db.windowScale = scale ~= 1 and scale or nil
+    for _, frame in ipairs(W.scaled) do frame:SetScale(scale) end
+end
+
+panel:SetScript("OnShow", function()
+    local db = MM.db
+    panel:SetScale(db.windowScale or 1)
+    ApplyMode()
+    ApplySize()
+    local p = db.point
+    if p then
+        panel:ClearAllPoints()
+        panel:SetPoint(p[1], UIParent, p[2], p[3], p[4])
+    end
+    if not foldedThisSession then
+        FoldAll()
+        foldedThisSession = true
+    end
+    CloseEditor()
+    Relayout()
+    MM:RefreshList()
+end)
+
+panel:SetScript("OnHide", function()
+    Fresh.Forget()
+    dragIcon:Hide()
+    dragIcon.itemID = nil
+    box:ClearFocus()
+    CloseEditor()
+    MM.activeVendors = nil
+    MM:RefreshMap()
+end)
+
+-- /mm reset categories and /mm reset all: what each resets, and a [Confirm] link that does it
+local RESETS = {
+    categories = { "your own categories and sorting go back to the defaults, and every item is sorted again",
+        function() MM:ResetCategories() end },
+    all = { "all saved data is wiped (settings, categories, hidden vendors and everything you've recorded) and the UI reloads",
+        function() MM:ResetEverything() end },
+}
+
+MM:OnChatLink("reset", function(which)
+    local reset = RESETS[which]
+    if not reset then return end
+    reset[2]()
+    if which == "categories" then print("|cffccb084Merchant Map:|r categories reset to the defaults.") end
+end)
+
+SLASH_MERCHANTMAP1 = "/mm"
+SLASH_MERCHANTMAP2 = "/merchantmap"
+SlashCmdList.MERCHANTMAP = function(input)
+    input = strtrim(input or "")
+    local msg = strlower(input)
+    if msg == "debug" then
+        MM.debug = not MM.debug
+        print(("|cffccb084Merchant Map:|r targeting debug %s."):format(MM.debug and "on" or "off"))
+    elseif msg == "minimap" then
+        MM:SetMinimapButtonShown(true)
+    elseif msg == "unverified" then
+        -- Not in the help: the map shows only NPCs you haven't visited, and marks the nearest
+        MM.verifyMode = not MM.verifyMode or nil
+        MM:RefreshMap()
+        MM:PointToNextUnvisited()
+        print(("|cffccb084Merchant Map:|r map shows %s."):format(
+            MM.verifyMode and "only NPCs you haven't visited" or "your usual pins again"))
+    elseif msg == "options" then
+        MM:OpenOptions()
+    elseif msg == "arrow" then
+        MM:ToggleArrow()
+    elseif msg == "share" then
+        MM:ToggleShare()
+    elseif msg == "auto" then
+        local count = MM:AutoCategorizeUncategorized()
+        print(("|cffccb084Merchant Map:|r auto-categorizing %d uncategorized items."):format(count))
+    elseif RESETS[msg:match("^reset (%a+)$") or ""] then
+        local which = msg:match("^reset (%a+)$")
+        print(("|cffccb084Merchant Map:|r this resets %s: %s. %s"):format(which, RESETS[which][1],
+            MM:ChatLink("reset", which, "Confirm")))
+    elseif msg ~= "" then
+        MM:Search(input)
+    else
+        MM:Toggle()
+    end
+end

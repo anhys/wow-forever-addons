@@ -1,0 +1,6 @@
+ScholomanceParchment.tga
+Custom illustrated parchment map based on the Classic Scholomance layout.
+The artwork was generated and adapted for DungeonJournal; it is not an
+original Blizzard map. Room positions are an illustrative projection.
+Atlas layout source and GPL-2.0 license: see SOURCES.txt and ATLAS-LICENSE.txt
+in this directory.

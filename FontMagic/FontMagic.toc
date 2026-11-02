@@ -1,0 +1,17 @@
+## Interface: 120105, 120100, 120007, 120005, 120001, 120000, 110207, 110205, 110200, 110107, 110105, 110100, 110007, 110005, 110002, 110000, 100207, 100206, 100205, 100200, 100107, 100105, 100100, 100007, 100005, 100002, 100000, 90200, 90100, 90005, 90002, 90000, 80300, 80200, 80100, 80000, 70300, 70200, 70100, 70000, 60200, 60100, 60000, 50504, 50503, 50400, 50300, 50200, 50100, 50001, 40402, 40400, 38002, 38001, 38000, 30405, 30403, 20506, 20505, 20504, 16001, 11509, 11508, 11506, 11502
+## Title: FontMagic
+## Notes: Cross-client floating combat text fonts and controls with live preview. Type /float or click the minimap icon; install |cff00ff00FontMagicCustomFonts|r for custom fonts
+## IconTexture: Interface\AddOns\FontMagic\FontMagic_MinimapIcon_Best_64
+## Author: Renvulf
+## Version: 4.1.8
+## SavedVariables: FontMagicDB
+## SavedVariablesPerCharacter: FontMagicPCDB
+
+## OptionalDeps: FontMagicCustomFonts, ElvUI, SUI
+
+Core\Bootstrap.lua
+Core\Compat.lua
+Core\Database.lua
+Core\Fonts.lua
+Core\CombatFont.lua
+FontMagic.lua

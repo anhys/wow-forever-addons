@@ -1,0 +1,1166 @@
+local _, MM = ...
+
+local MAX_TOOLTIP_ITEMS = 30
+
+-- Map helpers ---------------------------------------------------------------
+
+-- The map tree never changes during a session, so lookups on it are cached
+
+local ancestorCache = {}
+
+-- Walks up the map tree until mapType is at or above the wanted level
+local function Ancestor(mapID, mapType)
+    local byType = ancestorCache[mapType]
+    if not byType then
+        byType = {}
+        ancestorCache[mapType] = byType
+    end
+    local found = byType[mapID]
+    if found == nil then
+        local info = C_Map.GetMapInfo(mapID)
+        while info and info.mapType > mapType and info.parentMapID and info.parentMapID ~= 0 do
+            info = C_Map.GetMapInfo(info.parentMapID)
+        end
+        found = info and info.mapID or false
+        byType[mapID] = found
+    end
+    return found or nil
+end
+
+-- Where a child map sits on one of its parent maps, or false if mapID isn't a parent
+local rectCache = {}
+local function MapRect(child, mapID)
+    local byParent = rectCache[child]
+    if not byParent then
+        byParent = {}
+        rectCache[child] = byParent
+    end
+    local rect = byParent[mapID]
+    if rect == nil then
+        rect = false
+        local parent, depth = child, 0
+        repeat
+            local info = C_Map.GetMapInfo(parent)
+            parent = info and info.parentMapID
+            depth = depth + 1
+        until not parent or parent == 0 or parent == mapID or depth > 10
+        if parent == mapID then
+            local minX, maxX, minY, maxY = C_Map.GetMapRectOnMap(child, mapID)
+            if minX then rect = { minX, maxX - minX, minY, maxY - minY } end
+        end
+        byParent[mapID] = rect
+    end
+    return rect
+end
+
+-- Vendor position on mapID, if mapID is the vendor's map or one of its parents
+local function PosOnMap(vendor, mapID)
+    if not vendor.mapID then return end
+    if vendor.mapID == mapID then return vendor.x, vendor.y end
+    local rect = MapRect(vendor.mapID, mapID)
+    if rect then return rect[1] + vendor.x * rect[2], rect[3] + vendor.y * rect[4] end
+end
+
+-- Where an NPC stands in world coordinates (yards, same axes as UnitPosition), worked out once per spot
+local worldPos = setmetatable({}, { __mode = "k" })
+local function WorldPos(npc)
+    local cached = worldPos[npc]
+    if not (cached and cached.mapID == npc.mapID and cached.x == npc.x and cached.y == npc.y) then
+        cached = { mapID = npc.mapID, x = npc.x, y = npc.y }
+        if npc.mapID then
+            local instance, pos = C_Map.GetWorldPosFromMapPos(npc.mapID, CreateVector2D(npc.x, npc.y))
+            if pos then cached.instance, cached.north, cached.west = instance, pos:GetXY() end
+        end
+        worldPos[npc] = cached
+    end
+    return cached
+end
+
+-- Yards north and west from you to the NPC, or nil when they aren't on your continent.
+-- Read every frame by the arrow and minimap marker, so it avoids the map APIs that create tables.
+function MM:VectorTo(npc)
+    local py, px, _, instance = UnitPosition("player")
+    if not py or (issecretvalue and issecretvalue(py)) then return end
+    local pos = WorldPos(npc)
+    if not pos.north or pos.instance ~= instance then return end
+    return pos.north - py, pos.west - px
+end
+
+-- Pin styling and actions -------------------------------------------------------
+
+local PIN = "MerchantMapPinTemplate"
+local CIRCLE = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+local COIN = "Interface\\MoneyFrame\\UI-GoldIcon"
+local C = MM.COLORS
+local ACCENT, BORDER = C.accent, C.border
+
+local PIN_STYLES = {
+    vendor = { ring = { 0.85, 0.68, 0.2 }, icon = { 1, 1, 1 }, desaturate = false, alpha = 1 },
+    hidden = { ring = { 0.4, 0.4, 0.4 }, icon = { 0.6, 0.6, 0.6 }, desaturate = true, alpha = 0.7 },
+    service = { ring = { 0.45, 0.72, 0.78 }, icon = { 1, 1, 1 }, desaturate = false, alpha = 1 },
+}
+
+-- Works on map pins and spread buttons, which share Ring/Icon textures
+local function ApplyStyle(frame, state)
+    local style = PIN_STYLES[state]
+    frame.Ring:SetVertexColor(unpack(style.ring))
+    frame.Icon:SetDesaturated(style.desaturate)
+    frame.Icon:SetVertexColor(unpack(style.icon))
+    frame:SetAlpha(style.alpha)
+end
+
+local NAME_COLORS = { service = { 0.55, 0.85, 0.9 }, vendor = { 0.86, 0.80, 0.70 }, hidden = { 0.6, 0.6, 0.6 } }
+
+local spread
+
+local function StyleRow(row)
+    ApplyStyle(row, row.state)
+    row.name:SetTextColor(unpack(NAME_COLORS[row.state]))
+end
+
+-- Shift-click opens a vendor's full stock, alt-click hides or enables them. Returns true if handled.
+local function PinAction(frame)
+    if IsAltKeyDown() then
+        local hide = frame.state ~= "hidden"
+        MM.db.hiddenVendors[frame.key] = hide or nil
+        GameTooltip:Hide()
+        -- Stack list rows update in place so the list stays open
+        if frame.name then
+            frame.state = hide and "hidden" or (frame.vendor.service and "service" or "vendor")
+            StyleRow(frame)
+        end
+        MM:RefreshMap()
+        return true
+    elseif IsShiftKeyDown() then
+        if not frame.vendor.service then
+            MM:ShowVendorStock(frame.key)
+            if spread then spread:Hide() end
+        end
+        return true
+    end
+end
+
+-- Stack list: click a pin covering others to pick between them --------------------
+
+local ROW_W, ROW_H = 230, 22
+local rows = {}
+
+local function ScreenCenter(frame)
+    local x, y = frame:GetCenter()
+    local scale = frame:GetEffectiveScale()
+    return x * scale, y * scale
+end
+
+-- Pins whose centers are within 40% of a pin's width, which is roughly more than half their area overlapping
+local function OverlappingPins(pin)
+    local px, py = ScreenCenter(pin)
+    local radius = pin:GetWidth() * pin:GetEffectiveScale() * 0.4
+    local list = {}
+    for other in pin:GetMap():EnumeratePinsByTemplate(PIN) do
+        local x, y = ScreenCenter(other)
+        if (x - px) ^ 2 + (y - py) ^ 2 <= radius ^ 2 then list[#list + 1] = other end
+    end
+    table.sort(list, function(a, b) return a.vendor.name < b.vendor.name end)
+    return list
+end
+
+local function SolidBox(frame, alpha)
+    local border = frame:CreateTexture(nil, "BACKGROUND")
+    border:SetAllPoints()
+    border:SetColorTexture(BORDER[1], BORDER[2], BORDER[3], 1)
+    local bg = frame:CreateTexture(nil, "BORDER")
+    bg:SetPoint("TOPLEFT", 1, -1)
+    bg:SetPoint("BOTTOMRIGHT", -1, 1)
+    bg:SetColorTexture(C.bg[1], C.bg[2], C.bg[3], alpha)
+    local grain = frame:CreateTexture(nil, "BORDER", nil, 1)
+    grain:SetPoint("TOPLEFT", 1, -1)
+    grain:SetPoint("BOTTOMRIGHT", -1, 1)
+    grain:SetTexture(MM.GRAIN, "REPEAT", "REPEAT")
+    grain:SetHorizTile(true)
+    grain:SetVertTile(true)
+    grain:SetAlpha(0.35)
+end
+
+local function CreateSpread()
+    spread = CreateFrame("Frame", nil, WorldMapFrame)
+    spread:SetFrameStrata("FULLSCREEN_DIALOG")
+    spread:SetWidth(ROW_W)
+    spread:SetClampedToScreen(true)
+    spread:EnableMouse(true)
+    spread:Hide()
+    SolidBox(spread, 0.95)
+
+    spread.header = spread:CreateFontString(nil, "OVERLAY", "MM_GameFontNormalSmall")
+    spread.header:SetTextColor(ACCENT[1], ACCENT[2], ACCENT[3])
+    spread.header:SetPoint("TOPLEFT", 8, -7)
+
+    local close = CreateFrame("Button", nil, spread)
+    close:SetSize(18, 18)
+    close:SetPoint("TOPRIGHT", -3, -3)
+    close:SetNormalFontObject("MM_GameFontDisable")
+    close:SetHighlightFontObject("MM_GameFontNormal")
+    close:SetText("x")
+    close:SetScript("OnClick", function() spread:Hide() end)
+
+    local line = spread:CreateTexture(nil, "ARTWORK")
+    line:SetColorTexture(BORDER[1], BORDER[2], BORDER[3], 1)
+    line:SetHeight(1)
+    line:SetPoint("TOPLEFT", 6, -22)
+    line:SetPoint("TOPRIGHT", -6, -22)
+
+    local footer = spread:CreateFontString(nil, "OVERLAY", "MM_GameFontDisableSmall")
+    footer:SetPoint("BOTTOMLEFT", 8, 7)
+    footer:SetText("Shift-click: full stock    Alt-click: hide")
+
+    -- Stays open until you click somewhere else
+    spread:SetScript("OnShow", function(self) self:RegisterEvent("GLOBAL_MOUSE_DOWN") end)
+    spread:SetScript("OnHide", function(self) self:UnregisterEvent("GLOBAL_MOUSE_DOWN") end)
+    spread:SetScript("OnEvent", function(self)
+        if not self:IsMouseOver() then self:Hide() end
+    end)
+end
+
+-- Highest frame level among our pins; the minimap vendor sits just above it, a hovered pin above that
+local topPinLevel = 0
+
+-- Outlines a map pin and lifts it above the pins around it
+local function RaisePin(pin, on)
+    pin.Hover:SetShown(on)
+    if on then
+        pin.baseLevel = pin.baseLevel or pin:GetFrameLevel()
+        pin:SetFrameLevel(math.max(pin.baseLevel + 50, topPinLevel + 2))
+    elseif pin.baseLevel then
+        pin:SetFrameLevel(pin.baseLevel)
+        pin.baseLevel = nil
+    end
+end
+
+local function HighlightPin(key, on)
+    for pin in WorldMapFrame:EnumeratePinsByTemplate(PIN) do
+        if pin.key == key then RaisePin(pin, on) end
+    end
+end
+
+-- Targeting: a secure button laid over the hovered pin or list row. -------------------
+-- Targeting is protected, so a plain click runs a macro that targets the vendor by name
+-- and marks it with a skull (only if the target was found); shift/alt clicks fall through to PinAction.
+
+local targetButton
+
+-- Name of the vendor the last targeting click tried to skull-mark
+local lastMarked
+local AimButton -- defined below, once the macro builders exist
+
+local function NotSecret(value)
+    return not (issecretvalue and issecretvalue(value))
+end
+
+-- The target's name and raid icon, when readable
+local function TargetMark()
+    if not UnitExists("target") then return end
+    local name, icon = UnitName("target"), GetRaidTargetIndex("target")
+    if NotSecret(name) and NotSecret(icon) then return name, icon end
+end
+
+-- Target the vendor by name and skull them. /tm toggles an existing skull off, so the vendor we
+-- believe has our skull is only targeted. Otherwise the new vendor is targeted and marked, which moves
+-- the skull over by itself. Only if they can't be found does the macro go back and take the skull off
+-- the previous vendor. Every /targetexact is preceded by a cleared target so a failed lookup never
+-- leaves some other unit targeted or marked.
+local function TargetMacro(name)
+    local macro = "/cleartarget\n/targetexact " .. name
+    -- Option: target only, without a raid marker
+    if lastMarked == name or MM.db.noRaidMarker then return macro end
+    macro = macro .. "\n/tm [@target,exists] " .. (MM.db.raidMarker or 8)
+    if lastMarked then
+        macro = macro .. "\n/stopmacro [@target,exists]\n/targetexact " .. lastMarked
+            .. "\n/tm [@target,exists] 0\n/cleartarget"
+    end
+    return macro
+end
+
+-- Takes our skull off the vendor, if they're the one that has it and can be found
+local function UnmarkMacro(name)
+    if not name or lastMarked ~= name then return end
+    return "/cleartarget\n/targetexact " .. name .. "\n/tm [@target,exists] 0"
+end
+
+-- Sets the button's macros from the current skull state: left targets (and marks) targetName,
+-- right takes the skull off unmarkName when removing the marker
+function AimButton(b)
+    b:SetAttribute("macrotext", b.targetName and TargetMacro(b.targetName) or "")
+    b.rightMacro = UnmarkMacro(b.unmarkName)
+    b:SetAttribute("type2", b.rightMacro and "macro" or nil)
+    b:SetAttribute("macrotext2", b.rightMacro)
+end
+
+-- /mm debug prints what the targeting sees, to track down skull problems
+local function Debug(...)
+    if MM.debug then print("|cffccb084MM debug:|r", ...) end
+end
+
+local markEvents = CreateFrame("Frame")
+markEvents:RegisterEvent("RAID_TARGET_UPDATE")
+markEvents:RegisterEvent("PLAYER_TARGET_CHANGED")
+markEvents:SetScript("OnEvent", function(_, event)
+    if not MM.debug then return end
+    local name, icon = TargetMark()
+    Debug(event, "target:", tostring(name), "icon:", tostring(icon), "lastMarked:", tostring(lastMarked))
+end)
+
+-- The raid icon can't be read reliably right after marking, so after a click that included /tm 8:
+-- vendor targeted means they have the skull; not found means the old skull was taken off instead.
+local function RememberMark(name)
+    C_Timer.After(0.3, function()
+        local target = UnitExists("target") and UnitName("target")
+        if not (target and NotSecret(target)) then target = nil end
+        Debug("check", "target:", tostring(target), "wanted:", name)
+        if target == name then
+            lastMarked = name
+        else
+            lastMarked = nil
+        end
+        local b = targetButton
+        if b and b:IsShown() and not InCombatLockdown() then AimButton(b) end
+    end)
+end
+
+local function TargetButton()
+    if targetButton then return targetButton end
+    local b = CreateFrame("Button", "MerchantMapTargetButton", UIParent, "SecureActionButtonTemplate")
+    b:SetFrameStrata("TOOLTIP")
+    -- Secure buttons only act on the press or the release, depending on the "cast on key down"
+    -- setting, so register both and ask for the release
+    b:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+    b:SetAttribute("useOnKeyDown", false)
+    b:SetAttribute("type1", "macro")
+    -- Modified clicks never target; they are handled by the owner
+    b:SetAttribute("shift-type1", "noop")
+    b:SetAttribute("alt-type1", "noop")
+    b:SetAttribute("ctrl-type1", "noop")
+    b:Hide()
+    b:HookScript("OnClick", function(self, button, down)
+        Debug("click", button, down and "down" or "up", "shown macro:", ((self:GetAttribute("macrotext") or ""):gsub("\n", " | ")))
+        if down then return end
+        if button == "LeftButton" and self.targetName and self.targetName ~= lastMarked
+            and not MM.db.noRaidMarker and not (IsShiftKeyDown() or IsAltKeyDown() or IsControlKeyDown()) then
+            RememberMark(self.targetName)
+        end
+        local opts = self.opts
+        if button == "RightButton" and self.rightMacro and opts.onClick then lastMarked = nil end
+        if opts.onClick then
+            opts.onClick(self.owner, button)
+        elseif button == "RightButton" then
+            -- Only the marked pin takes right-click (to clear the marker); others pass it to the map
+            if self.rightMacro then lastMarked = nil end
+            MM:ClearMinimapVendor()
+        elseif PinAction(self.owner) then
+            -- Step aside after shift/alt actions; the frame underneath re-attaches on hover
+            self:Hide()
+        else
+            MM:SetMinimapVendor(self.owner.vendor, self.owner.key)
+        end
+    end)
+    -- Owner callbacks; map pins don't need them since the hover tracker handles them
+    b:SetScript("OnEnter", function(self)
+        if self.opts.onEnter then self.opts.onEnter(self.owner) end
+    end)
+    b:SetScript("OnLeave", function(self)
+        if self.dragging then return end
+        self:Hide()
+        if self.opts.onLeave then self.opts.onLeave(self.owner) end
+    end)
+    -- The drag only starts once the cursor has moved a little, by which time it may have moved the
+    -- button onto the next row; the row that was pressed is the one being dragged
+    b:HookScript("OnMouseDown", function(self) self.pressed = { owner = self.owner, opts = self.opts } end)
+    b:HookScript("OnMouseUp", function(self) self.pressed = nil end)
+    b:SetScript("OnDragStart", function(self)
+        local pressed = self.pressed or self
+        if not pressed.opts.onDragStart then return end
+        self.dragging = true
+        pressed.opts.onDragStart(pressed.owner)
+    end)
+    b:SetScript("OnDragStop", function(self)
+        -- Hiding the button below fires OnDragStop again; only handle the real one
+        if not self.dragging then return end
+        self.dragging = nil
+        if self.opts.onDragStop then self.opts.onDragStop(self.owner) end
+        if not self:IsMouseOver() then self:GetScript("OnLeave")(self) end
+    end)
+    -- Secure frames can't be hidden in combat, so get out of the way first
+    b:RegisterEvent("PLAYER_REGEN_DISABLED")
+    b:SetScript("OnEvent", b.Hide)
+    targetButton = b
+    return b
+end
+
+local function IsTargetOwner(frame)
+    return targetButton and targetButton.owner == frame and targetButton:IsShown()
+end
+
+-- Placed by screen position rather than anchored, since the owner is not a secure frame
+local function PlaceTargetButton(owner)
+    local b = targetButton
+    local scale = owner:GetEffectiveScale() / b:GetEffectiveScale()
+    local x, y = owner:GetCenter()
+    b:SetSize(owner:GetWidth() * scale, owner:GetHeight() * scale)
+    b:ClearAllPoints()
+    b:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x * scale, y * scale)
+end
+
+-- Never mid-drag: hiding the button would end the drag
+local function HideTargetButton()
+    if targetButton and not targetButton.dragging and not InCombatLockdown() then targetButton:Hide() end
+end
+
+-- Name the targeting macro uses; mailboxes and other objects can't be targeted
+function MM:TargetName(npc)
+    return npc and not npc.object and npc.name or nil
+end
+
+-- opts: name (defaults to the owner's vendor), rightClick, onEnter, onLeave, onClick, onDragStart, onDragStop
+local function AttachTargetButton(owner, opts)
+    -- A list refresh mid-drag would re-aim the button and lose the drop
+    if InCombatLockdown() or (targetButton and targetButton.dragging) then return end
+    opts = opts or {}
+    local b = TargetButton()
+    b.owner, b.opts, b.dragging = owner, opts, nil
+    local name = opts.name or MM:TargetName(owner.vendor)
+    b.targetName = name or nil
+    b.unmarkName = opts.unmarkName
+    AimButton(b)
+    -- Without rightClick, right-click passes through to what's underneath. On a map pin that reaches
+    -- the map's own zoom-out, since zooming it from addon code would taint it.
+    if opts.rightClick then
+        b:RegisterForClicks("LeftButtonUp", "LeftButtonDown", "RightButtonUp", "RightButtonDown")
+        b:SetPassThroughButtons()
+    else
+        b:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+        b:SetPassThroughButtons("RightButton")
+    end
+    if opts.onDragStart then b:RegisterForDrag("LeftButton") else b:RegisterForDrag() end
+    PlaceTargetButton(owner)
+    b:Show()
+end
+
+local function SpreadRow(i)
+    local row = CreateFrame("Button", nil, spread)
+    row:SetSize(ROW_W - 8, ROW_H)
+    row:SetPoint("TOPLEFT", 4, -26 - (i - 1) * ROW_H)
+    -- Shown by hand, since the targeting button covers the row while hovered
+    local hl = row:CreateTexture(nil, "BACKGROUND", nil, -1)
+    hl:SetAllPoints()
+    hl:SetColorTexture(ACCENT[1], ACCENT[2], ACCENT[3], 0.15)
+    hl:Hide()
+    local accent = row:CreateTexture(nil, "ARTWORK")
+    accent:SetWidth(2)
+    accent:SetPoint("TOPLEFT")
+    accent:SetPoint("BOTTOMLEFT")
+    accent:SetColorTexture(ACCENT[1], ACCENT[2], ACCENT[3], 1)
+    accent:Hide()
+
+    row.Ring = row:CreateTexture(nil, "BACKGROUND")
+    row.Ring:SetSize(16, 16)
+    row.Ring:SetPoint("LEFT", 4, 0)
+    row.Ring:SetTexture(CIRCLE)
+    local disc = row:CreateTexture(nil, "BORDER")
+    disc:SetSize(14, 14)
+    disc:SetPoint("CENTER", row.Ring)
+    disc:SetTexture(CIRCLE)
+    disc:SetVertexColor(0.05, 0.05, 0.07, 0.9)
+    row.Icon = row:CreateTexture(nil, "ARTWORK")
+    row.Icon:SetSize(10, 10)
+    row.Icon:SetPoint("CENTER", row.Ring)
+    row.Icon:SetTexture(COIN)
+
+    row.title = row:CreateFontString(nil, "OVERLAY", "MM_GameFontDisableSmall")
+    row.title:SetPoint("RIGHT", -6, 0)
+    row.title:SetWidth(90)
+    row.title:SetJustifyH("RIGHT")
+    row.title:SetWordWrap(false)
+
+    row.name = row:CreateFontString(nil, "OVERLAY", "MM_GameFontHighlightSmall")
+    row.name:SetPoint("LEFT", row.Ring, "RIGHT", 6, 0)
+    row.name:SetPoint("RIGHT", row.title, "LEFT", -6, 0)
+    row.name:SetJustifyH("LEFT")
+    row.name:SetWordWrap(false)
+
+    local function Enter()
+        hl:Show()
+        accent:Show()
+        HighlightPin(row.key, true)
+        MM:ShowVendorTooltip(row, row.key, 1)
+    end
+    local function Leave()
+        hl:Hide()
+        accent:Hide()
+        HighlightPin(row.key, false)
+        GameTooltip:Hide()
+    end
+    row:SetScript("OnEnter", function(self)
+        Enter()
+        AttachTargetButton(self, { onEnter = Enter, onLeave = Leave })
+    end)
+    row:SetScript("OnLeave", function(self)
+        if not IsTargetOwner(self) then Leave() end
+    end)
+    row:SetScript("OnClick", PinAction)
+    return row
+end
+
+local function ShowSpread(anchor, pins)
+    if not spread then CreateSpread() end
+    for i, pin in ipairs(pins) do
+        local row = rows[i] or SpreadRow(i)
+        rows[i] = row
+        row.key, row.vendor, row.state = pin.key, pin.vendor, pin.state
+        row.name:SetText(pin.vendor.name)
+        row.Icon:SetTexture(pin.vendor.icon or COIN)
+        StyleRow(row)
+        row.title:SetText(pin.vendor.title or "")
+        row:Show()
+    end
+    for i = #pins + 1, #rows do rows[i]:Hide() end
+
+    spread.header:SetText(("%d vendors here"):format(#pins))
+    spread:SetHeight(26 + #pins * ROW_H + 22)
+    -- Fixed screen position, so it survives the pins being redrawn
+    local scale = anchor:GetEffectiveScale() / spread:GetEffectiveScale()
+    spread:ClearAllPoints()
+    spread:SetPoint("BOTTOM", UIParent, "BOTTOMLEFT", anchor:GetCenter() * scale, anchor:GetTop() * scale + 6)
+    spread:Show()
+end
+
+-- Pin -------------------------------------------------------------------------
+
+MerchantMapPinMixin = CreateFromMixins(MapCanvasPinMixin)
+
+function MerchantMapPinMixin:OnLoad()
+    self:UseFrameLevelType("PIN_FRAME_LEVEL_VIGNETTE")
+    self:SetScalingLimits(1, 1.0, 1.3)
+    self.Disc:SetVertexColor(0.05, 0.05, 0.07, 0.9)
+    -- White outline shown on hover, or when the vendor is hovered in the overlap list
+    self.Hover = self:CreateTexture(nil, "BACKGROUND", nil, -1)
+    self.Hover:SetSize(26, 26)
+    self.Hover:SetPoint("CENTER")
+    self.Hover:SetTexture(CIRCLE)
+    self.Hover:Hide()
+    -- Green ring over the normal ring for the vendor currently on the minimap
+    self.Marked = self:CreateTexture(nil, "BACKGROUND", nil, 1)
+    self.Marked:SetSize(22, 22)
+    self.Marked:SetPoint("CENTER")
+    self.Marked:SetTexture(CIRCLE)
+    self.Marked:SetVertexColor(0.35, 0.85, 0.35)
+    self.Marked:Hide()
+end
+
+local function PinAlpha(pin)
+    return PIN_STYLES[pin.state].alpha
+end
+
+-- Blizzard's pin code sets each pin's click-through when it's added, and that call is blocked in combat.
+-- Ours does nothing so pins can be added in combat; OnAcquired sets it for real while out of combat.
+local SetPassThrough = CreateFrame("Button").SetPassThroughButtons
+function MerchantMapPinMixin:SetPassThroughButtons() end
+
+function MerchantMapPinMixin:OnAcquired(key, vendor, state, x, y)
+    self.key, self.vendor, self.state, self.baseLevel = key, vendor, state, nil
+    -- Services show their own icon (trainer, flight master...), vendors the coin
+    self.Icon:SetTexture(vendor.icon or COIN)
+    self.Icon:SetSize(vendor.icon and 15 or 13, vendor.icon and 15 or 13)
+    ApplyStyle(self, state)
+    self:SetAlpha(PinAlpha(self))
+    self.Hover:Hide()
+    self.Marked:SetShown(key == MM.minimapKey)
+    self:SetPosition(x, y)
+    -- Right-click passes to the map (zoom out), except on the marked pin. Pins added in combat keep
+    -- what they had until the refresh after combat.
+    if not InCombatLockdown() then
+        if key == MM.minimapKey then SetPassThrough(self) else SetPassThrough(self, "RightButton") end
+    end
+end
+
+-- Hover tracker: among the pins under the cursor, the one whose center is closest wins, -------
+-- so overlapping pins don't flicker as the raised one changes what's under the mouse.
+
+local hovered
+local tracker = CreateFrame("Frame")
+tracker:Hide()
+
+-- Whether the cursor is on one of our pins, and whether it's on the map at all
+local function MouseOnPins()
+    local focus = GetMouseFoci and GetMouseFoci()[1] or (GetMouseFocus and GetMouseFocus())
+    if focus and focus == targetButton then focus = focus.owner end
+    if not focus then return false, false end
+    if focus.GetMap and focus.key ~= nil then return true, true end
+    local canvas, frame = WorldMapFrame.ScrollContainer, focus
+    for _ = 1, 6 do
+        if frame == canvas then return false, true end
+        frame = frame.GetParent and frame:GetParent()
+        if not frame then break end
+    end
+    return false, false
+end
+
+-- The waypoint we placed sits on top of its vendor's pin and takes the mouse,
+-- so that pin counts as hovered whatever is over it. Matched by spot, as data refreshes make new tables.
+local function UnderWaypoint(vendor)
+    local w = MM.waypointVendor
+    return w and vendor.name == w.name and vendor.mapID == w.mapID and vendor.x == w.x and vendor.y == w.y
+end
+
+local function NearestPin()
+    if not WorldMapFrame:IsVisible() then return end
+    local onPins, onMap = MouseOnPins()
+    if not (onPins or (onMap and MM.waypointVendor)) then return end
+    local x, y = GetCursorPosition()
+    local best, bestDist
+    for pin in WorldMapFrame:EnumeratePinsByTemplate(PIN) do
+        if pin:IsVisible() and pin:IsMouseOver() and (onPins or UnderWaypoint(pin.vendor)) then
+            local px, py = ScreenCenter(pin)
+            local dist = (px - x) ^ 2 + (py - y) ^ 2
+            if not bestDist or dist < bestDist then best, bestDist = pin, dist end
+        end
+    end
+    return best
+end
+
+-- Holding Ctrl over the vendor under our waypoint hands the mouse back to the waypoint pin,
+-- so it can be ctrl-clicked away
+local function WaypointWanted(pin)
+    return IsControlKeyDown() and UnderWaypoint(pin.vendor)
+end
+
+-- Stacked pins keep their plain click for the overlap list
+local function AttachPinTargeting(pin)
+    if pin.stacked == 1 and not WaypointWanted(pin) then
+        AttachTargetButton(pin, {
+            rightClick = pin.key == MM.minimapKey,
+            unmarkName = pin.key == MM.minimapKey and MM:TargetName(pin.vendor) or nil,
+        })
+    else
+        HideTargetButton()
+    end
+end
+
+local function SetHovered(pin)
+    if pin == hovered then return end
+    if hovered then
+        RaisePin(hovered, false)
+        GameTooltip:Hide()
+    end
+    hovered = pin
+    if not pin then
+        HideTargetButton()
+        return
+    end
+
+    RaisePin(pin, true)
+    pin.stacked = #OverlappingPins(pin)
+    MM:ShowVendorTooltip(pin, pin.key, pin.stacked)
+    AttachPinTargeting(pin)
+    tracker:Show()
+end
+
+local modifierEvents = CreateFrame("Frame")
+modifierEvents:RegisterEvent("MODIFIER_STATE_CHANGED")
+modifierEvents:SetScript("OnEvent", function()
+    if not (hovered and UnderWaypoint(hovered.vendor)) then return end
+    if WaypointWanted(hovered) then
+        HideTargetButton()
+        GameTooltip:Hide()
+    else
+        MM:ShowVendorTooltip(hovered, hovered.key, hovered.stacked)
+        AttachPinTargeting(hovered)
+    end
+end)
+
+local elapsed, lastX, lastY, lastScale = 0, nil, nil, nil
+-- Runs while the map is open, so the pin under our waypoint is noticed without its own mouse events
+tracker:SetScript("OnUpdate", function(self, dt)
+    elapsed = elapsed + dt
+    if elapsed < 0.05 then return end
+    elapsed = 0
+    if not WorldMapFrame:IsVisible() then
+        SetHovered(nil)
+        self:Hide()
+        return
+    end
+    local x, y = GetCursorPosition()
+    local scale = WorldMapFrame:GetCanvasScale()
+    -- The waypoint pin over ours shows its own tooltip when entered; ours takes over again
+    if hovered and UnderWaypoint(hovered.vendor) and not WaypointWanted(hovered) and not (spread and spread:IsShown())
+        and not (GameTooltip:IsOwned(hovered) and GameTooltip:IsShown()) then
+        MM:ShowVendorTooltip(hovered, hovered.key, hovered.stacked)
+    end
+    -- Nothing to recheck while the cursor, zoom and pins stay put
+    if x == lastX and y == lastY and scale == lastScale then return end
+    lastX, lastY, lastScale = x, y, scale
+    SetHovered(NearestPin())
+    -- Follow the pin if the map is zoomed or panned under the cursor
+    if hovered and IsTargetOwner(hovered) and not InCombatLockdown() then PlaceTargetButton(hovered) end
+end)
+
+function MerchantMapPinMixin:OnMouseEnter()
+    SetHovered(NearestPin() or self)
+end
+
+function MerchantMapPinMixin:OnMouseLeave()
+    -- The tracker notices when the cursor leaves all pins
+end
+
+-- The map canvas owns the pin's mouse scripts and forwards to these methods
+-- The map gives each pin its own frame level and reassigns them at times;
+-- the minimap vendor is always lifted above the rest
+function MerchantMapPinMixin:ApplyFrameLevel()
+    if MapCanvasPinMixin.ApplyFrameLevel then MapCanvasPinMixin.ApplyFrameLevel(self) end
+    if self.key == MM.minimapKey then
+        self:SetFrameLevel(math.max(self:GetFrameLevel(), topPinLevel + 1))
+    end
+end
+
+-- Right-click passes through to the map (zoom out), except on the minimap vendor's pin
+function MerchantMapPinMixin:ShouldMouseButtonBePassthrough(button)
+    return button == "RightButton" and self.key ~= MM.minimapKey
+end
+
+function MerchantMapPinMixin:OnMouseClickAction(button)
+    if button == "RightButton" then
+        if self.key == MM.minimapKey then MM:ClearMinimapVendor() end
+        return
+    end
+    if button ~= "LeftButton" or PinAction(self) then return end
+    local cluster = OverlappingPins(self)
+    if #cluster > 1 then
+        GameTooltip:Hide()
+        ShowSpread(self, cluster)
+    end
+end
+
+-- Data provider ---------------------------------------------------------------
+
+local Provider = CreateFromMixins(MapCanvasDataProviderMixin)
+
+function Provider:RemoveAllData()
+    self:GetMap():RemoveAllPinsByTemplate(PIN)
+end
+
+-- Search results, or every vendor with its full stock when the map toggle is on
+local function VendorItems(key, vendor)
+    local ids = {}
+    for itemID in pairs(vendor.items) do
+        local item = MM.db.items[itemID]
+        if item and item.vendors[key] then ids[#ids + 1] = itemID end
+    end
+    -- Items not in stock at the last visit go last
+    table.sort(ids, function(a, b)
+        local itemA, itemB = MM.db.items[a], MM.db.items[b]
+        local lateA, lateB = itemA.vendors[key].notSeen or false, itemB.vendors[key].notSeen or false
+        if lateA ~= lateB then return lateB end
+        return (itemA.name or "") < (itemB.name or "")
+    end)
+    return ids
+end
+
+-- Everything a vendor sells that's shown, by name
+function MM:VendorItems(key)
+    local vendor = self.db.vendors[key]
+    return vendor and VendorItems(key, vendor) or {}
+end
+
+local function PinState(key, vendor)
+    if MM.db.hiddenVendors[key] then return "hidden" end
+    return vendor.service and "service" or "vendor"
+end
+
+-- Search results or all vendors (Vendors), plus hidden ones (Show hidden)
+-- /mm unverified (left out of the help): only the NPCs you haven't visited or talked to yet
+local function UnvisitedNPCs()
+    local db, pinned = MM.db, {}
+    for key, vendor in pairs(db.vendors) do
+        if vendor.classic and not vendor.located then pinned[key] = true end
+    end
+    for key, npc in pairs(MM.services) do
+        if not npc.verifiedAt then pinned[key] = true end
+    end
+    for key in pairs(pinned) do
+        if db.hiddenVendors[key] and not db.showHidden then pinned[key] = nil end
+    end
+    return pinned
+end
+
+local function PinnedVendors()
+    local db = MM.db
+    local pinned = {}
+    if MM.verifyMode then
+        pinned = UnvisitedNPCs()
+        if MM.minimapKey and MM:GetNPC(MM.minimapKey) then pinned[MM.minimapKey] = true end
+        return pinned
+    end
+    for key, ids in pairs(MM.activeVendors or {}) do pinned[key] = ids end
+    for key, vendor in pairs(db.vendors) do
+        local state = PinState(key, vendor)
+        -- While searching, only vendors selling the matched items are pinned
+        local wanted = not MM.activeVendors and ((state == "vendor" and db.showAllVendors)
+            or (state == "hidden" and db.showHidden))
+        if wanted and not pinned[key] then
+            -- Item list is built on first hover, not for every pin
+            pinned[key] = true
+        elseif state == "hidden" and not db.showHidden then
+            pinned[key] = nil
+        end
+    end
+    -- Hidden service NPCs from a search stay hidden unless "Show hidden" is on
+    if not db.showHidden then
+        for key in pairs(pinned) do
+            if db.hiddenVendors[key] and not db.vendors[key] then pinned[key] = nil end
+        end
+    end
+    -- The vendor on the minimap always shows, whatever the toggles
+    local marked = MM.minimapKey
+    if marked and MM:GetNPC(marked) and not pinned[marked] then pinned[marked] = true end
+    return pinned
+end
+
+function Provider:OnMapChanged()
+    if spread then spread:Hide() end
+    MapCanvasDataProviderMixin.OnMapChanged(self)
+end
+
+-- A vendor in another zone of the same continent whose spot still falls inside this map,
+-- since zone maps overlap at their borders. Farther ones aren't shown.
+local function NearbyPos(vendor, mapID)
+    local continent = Ancestor(mapID, Enum.UIMapType.Continent)
+    if not continent or continent == mapID then return end
+    local cx, cy = PosOnMap(vendor, continent)
+    local rect = MapRect(mapID, continent)
+    if not (cx and rect and rect[2] > 0 and rect[4] > 0) then return end
+    return (cx - rect[1]) / rect[2], (cy - rect[3]) / rect[4]
+end
+
+function Provider:RefreshAllData()
+    SetHovered(nil)
+    self:RemoveAllData()
+    local map = self:GetMap()
+    local mapID = map:GetMapID()
+
+    MM.pinned = PinnedVendors()
+    for key in pairs(MM.pinned) do
+        local vendor = MM:GetNPC(key)
+        local x, y
+        if vendor then x, y = PosOnMap(vendor, mapID) end
+        if not x and vendor then x, y = NearbyPos(vendor, mapID) end
+        if x and x >= 0 and x <= 1 and y >= 0 and y <= 1 then
+            map:AcquirePin(PIN, key, vendor, PinState(key, vendor), x, y)
+        end
+    end
+
+    -- Lift the minimap vendor above every other pin
+    local marked
+    topPinLevel = 0
+    for pin in map:EnumeratePinsByTemplate(PIN) do
+        if pin.key == MM.minimapKey then
+            marked = pin
+        else
+            topPinLevel = math.max(topPinLevel, pin:GetFrameLevel())
+        end
+    end
+    if marked then marked:SetFrameLevel(math.max(marked:GetFrameLevel(), topPinLevel + 1)) end
+    lastX = nil
+    tracker:Show()
+end
+
+local function Attach()
+    WorldMapFrame:AddDataProvider(Provider)
+    WorldMapFrame:HookScript("OnHide", function() SetHovered(nil) end)
+end
+
+if WorldMapFrame then
+    Attach()
+else
+    EventUtil.ContinueOnAddOnLoaded("Blizzard_WorldMap", Attach)
+end
+
+-- Pins added in combat get their click-through once it ends
+local combatEvents = CreateFrame("Frame")
+combatEvents:RegisterEvent("PLAYER_REGEN_ENABLED")
+combatEvents:SetScript("OnEvent", function() MM:RefreshMap() end)
+
+-- Showing every vendor has no toggle for now (the world map button is gone), so nobody is left with it stuck on
+local loginEvents = CreateFrame("Frame")
+loginEvents:RegisterEvent("PLAYER_LOGIN")
+loginEvents:SetScript("OnEvent", function() MM.db.showAllVendors = nil end)
+
+-- API used by the UI ------------------------------------------------------------
+
+function MM:PosOnMap(vendor, mapID)
+    return PosOnMap(vendor, mapID)
+end
+
+-- Vendors are keyed by NPC ID, service NPCs (trainers etc.) by "s" .. NPC ID
+function MM:GetNPC(key)
+    return self.db.vendors[key] or (self.services and self.services[key])
+end
+
+-- Tooltip for a trainer, flight master or other service NPC
+function MM:ShowServiceTooltip(owner, key, stacked, anchor)
+    local npc = self.services and self.services[key]
+    if not npc then return end
+    GameTooltip:SetOwner(owner, anchor or "ANCHOR_RIGHT")
+    GameTooltip:AddLine(npc.name, 0.55, 0.85, 0.9)
+    if npc.title then GameTooltip:AddLine("<" .. npc.title .. ">", 0.8, 0.8, 0.8) end
+    GameTooltip:AddLine(self:LocationText(npc), 0.8, 0.8, 0.8)
+    GameTooltip:AddLine(" ")
+    for _, path in ipairs(npc.paths) do
+        GameTooltip:AddLine((path:gsub("^Services/", ""):gsub("/", " > ")), 1, 1, 1)
+    end
+    -- Map pins pass how many pins overlap; the window's list doesn't, and has no alt-click
+    if stacked then
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine(self.db.hiddenVendors[key] and "Alt-click to enable" or "Alt-click to hide", 0.5, 0.5, 0.5)
+    end
+    GameTooltip:Show()
+end
+
+-- Raid marker put on targeted vendors, 1 (star) to 8 (skull). The next click marks again,
+-- since the vendor marked so far still has the old icon.
+function MM:SetRaidMarker(index)
+    self.db.raidMarker = index ~= 8 and index or nil
+    lastMarked = nil
+    if targetButton and targetButton:IsShown() and not InCombatLockdown() then AimButton(targetButton) end
+end
+
+-- Option: target the vendor without putting a raid marker on them
+function MM:SetRaidMarkerEnabled(on)
+    self.db.noRaidMarker = not on or nil
+    lastMarked = nil
+    if targetButton and targetButton:IsShown() and not InCombatLockdown() then AimButton(targetButton) end
+end
+
+-- A drag that ended without the button hearing about it
+function MM:EndTargetDrag()
+    local b = targetButton
+    if not (b and b.dragging) then return end
+    b.dragging = nil
+    if not b:IsMouseOver() and not InCombatLockdown() then b:GetScript("OnLeave")(b) end
+end
+
+function MM:AttachTargetButton(owner, opts)
+    AttachTargetButton(owner, opts)
+end
+
+function MM:IsTargetOwner(frame)
+    return IsTargetOwner(frame)
+end
+
+function MM:RefreshMap()
+    if Provider:GetMap() and WorldMapFrame:IsShown() then
+        Provider:RefreshAllData()
+    end
+end
+
+function MM:ShowVendorTooltip(owner, key, stacked)
+    if self.services and self.services[key] then return self:ShowServiceTooltip(owner, key, stacked) end
+    local vendor = self.db.vendors[key]
+    local matched = self.pinned and self.pinned[key]
+    if not (vendor and matched) then return end
+
+    -- Full stock, with the items you searched for or selected listed first and marked (even when not in
+    -- stock at the last visit, which they then say in red), and the other not-in-stock ones at the bottom
+    local itemIDs, isMatch = VendorItems(key, vendor), {}
+    if matched ~= true then
+        for _, itemID in ipairs(matched) do isMatch[itemID] = true end
+        local first, rest, late = {}, {}, {}
+        for _, itemID in ipairs(itemIDs) do
+            local list = isMatch[itemID] and first or self.db.items[itemID].vendors[key].notSeen and late or rest
+            list[#list + 1] = itemID
+        end
+        for _, itemID in ipairs(rest) do first[#first + 1] = itemID end
+        for _, itemID in ipairs(late) do first[#first + 1] = itemID end
+        itemIDs = first
+    end
+
+    GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(vendor.name, 1, 0.82, 0)
+    if vendor.title then GameTooltip:AddLine("<" .. vendor.title .. ">", 0.8, 0.8, 0.8) end
+    GameTooltip:AddLine(self:LocationText(vendor), 0.8, 0.8, 0.8)
+    GameTooltip:AddLine(" ")
+
+    local lateShown
+    for i, itemID in ipairs(itemIDs) do
+        if i > MAX_TOOLTIP_ITEMS then
+            GameTooltip:AddLine(("... and %d more"):format(#itemIDs - MAX_TOOLTIP_ITEMS), 0.6, 0.6, 0.6)
+            break
+        end
+        local item = self.db.items[itemID]
+        local offer = item.vendors[key]
+        local color = ITEM_QUALITY_COLORS[item.quality or 1] or ITEM_QUALITY_COLORS[1]
+        local marker = isMatch[itemID] and "|cff8fd18f>|r " or ""
+        local text = marker .. "|T" .. (item.icon or 134400) .. ":0|t " .. (item.name or "?")
+        if offer.notSeen and isMatch[itemID] then
+            GameTooltip:AddDoubleLine(text, "|cffff4d4dNot in stock at last visit|r", color.r, color.g, color.b)
+        elseif offer.notSeen then
+            if not lateShown then
+                lateShown = true
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine("Not in stock at last visit:", 0.6, 0.6, 0.6)
+            end
+            GameTooltip:AddLine(text, color.r * 0.7, color.g * 0.7, color.b * 0.7)
+        else
+            GameTooltip:AddDoubleLine(text, self:PriceText(offer), color.r, color.g, color.b, 1, 1, 1)
+        end
+    end
+
+    GameTooltip:AddLine(" ")
+    GameTooltip:AddLine("Shift-click for full inventory", 0.5, 0.5, 0.5)
+    GameTooltip:AddLine(self.db.hiddenVendors[key] and "Alt-click to enable" or "Alt-click to hide", 0.5, 0.5, 0.5)
+    GameTooltip:Show()
+end
+
+-- Uses WaypointUI's navigation when it's installed, so the waypoint can carry a name
+local function PlaceWaypoint(mapID, x, y, name)
+    local wui = WaypointUIAPI and WaypointUIAPI.Navigation
+    if wui and wui.NewUserNavigation then
+        local ok, placed = pcall(wui.NewUserNavigation, { name = name, mapID = mapID, x = x * 100, y = y * 100 })
+        if ok and placed then return end
+    end
+    C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(mapID, x, y))
+    C_SuperTrack.SetSuperTrackedUserWaypoint(true)
+end
+
+function MM:ClearWaypoint()
+    if InCombatLockdown() then return end
+    self.waypointVendor = nil
+    local wui = WaypointUIAPI and WaypointUIAPI.Navigation
+    if wui and wui.ClearUserNavigation and pcall(wui.ClearUserNavigation) then return end
+    C_Map.ClearUserWaypoint()
+end
+
+-- name is what the waypoint is called where that's supported, like the item you're buying
+function MM:SetWaypoint(vendor, name)
+    if InCombatLockdown() then return end
+    if not (vendor and vendor.mapID and C_Map.CanSetUserWaypointOnMap) then return end
+
+    -- Micro maps often reject waypoints, so climb until one accepts
+    local mapID, depth = vendor.mapID, 0
+    while mapID and mapID ~= 0 and depth < 10 do
+        if C_Map.CanSetUserWaypointOnMap(mapID) then
+            local x, y = PosOnMap(vendor, mapID)
+            if x then
+                PlaceWaypoint(mapID, x, y, name or vendor.name)
+                self.waypointVendor = vendor
+            end
+            return
+        end
+        local info = C_Map.GetMapInfo(mapID)
+        mapID = info and info.parentMapID
+        depth = depth + 1
+    end
+end
+
+-- Closest of the keys (NPC key -> value) on your continent. skip(value) leaves some out.
+local function ClosestNPC(keys, skip)
+    local playerMap = C_Map.GetBestMapForUnit("player")
+    local continent = playerMap and Ancestor(playerMap, Enum.UIMapType.Continent)
+    local pos = continent and C_Map.GetPlayerMapPosition(continent, "player")
+    if not pos then return end
+    local width, height = C_Map.GetMapWorldSize(continent)
+    if not width or width == 0 then return end
+    local px, py = pos:GetXY()
+
+    local best, bestDist
+    for key, value in pairs(keys) do
+        local npc = MM:GetNPC(key)
+        local shown = (MM.db.showHidden or not MM.db.hiddenVendors[key]) and not (skip and skip(value))
+        local x, y
+        if shown and npc then x, y = PosOnMap(npc, continent) end
+        if x then
+            local dist = ((x - px) * width) ^ 2 + ((y - py) * height) ^ 2
+            if not bestDist or dist < bestDist then best, bestDist = key, dist end
+        end
+    end
+    return best
+end
+
+-- Which vendor to send you to for an item, nearest of the first group that has one on your continent:
+-- unlimited or unchecked stock, then limited stock, then vendors that didn't have it at the last visit
+local function NotUnlimited(offer) return offer.notSeen or offer.limited end
+local function NotSeen(offer) return offer.notSeen end
+
+local function ClosestVendor(item)
+    return ClosestNPC(item.vendors, NotUnlimited) or ClosestNPC(item.vendors, NotSeen) or ClosestNPC(item.vendors)
+end
+
+function MM:ClosestVendorKey(itemID)
+    local item = self.db.items[itemID]
+    return item and ClosestVendor(item)
+end
+
+-- Closest vendor selling any of the items, judged by its best offer of them
+local function OfferRank(offer) return offer.notSeen and 2 or offer.limited and 1 or 0 end
+
+function MM:ClosestVendorFor(itemIDs)
+    local offers = {}
+    for _, itemID in ipairs(itemIDs) do
+        local item = self.db.items[itemID]
+        for key, offer in pairs(item and item.vendors or {}) do
+            if not offers[key] or OfferRank(offer) < OfferRank(offers[key]) then offers[key] = offer end
+        end
+    end
+    local key = ClosestVendor({ vendors = offers })
+    return key, key and offers[key]
+end
+
+-- Closest of a set of service NPC keys
+function MM:ClosestServiceKey(keys)
+    return ClosestNPC(keys)
+end
+
+-- In /mm unverified, marks the nearest NPC you haven't visited yet
+function MM:PointToNextUnvisited()
+    if not self.verifyMode then return end
+    local key = ClosestNPC(UnvisitedNPCs())
+    if key then
+        self:SetMinimapVendor(self:GetNPC(key), key)
+    else
+        print("|cffccb084Merchant Map:|r no unvisited NPCs left on this continent.")
+    end
+end
+
+-- Clicking an item or NPC marks the closest one: minimap marker, arrow, waypoint and target.
+-- The world map is never opened or moved from here: changing its zone from addon code taints its
+-- scroll state for the rest of the session, which blocks Blizzard's quest pins when it's opened in combat.
+function MM:ShowServiceOnMap(key)
+    local npc = self.services and self.services[key]
+    if npc then self:SetMinimapVendor(npc, key) end
+end
+
+function MM:ShowItemOnMap(itemID)
+    local item = self.db.items[itemID]
+    if not item then return end
+    -- A new item replaces the old marker, or clears it when nobody on this continent sells it
+    local closest = ClosestVendor(item)
+    if closest then
+        local offer = item.vendors[closest]
+        self:SetMinimapVendor(self.db.vendors[closest], closest, item.name, offer.limited and not offer.notSeen)
+    else
+        self:ClearMinimapVendor()
+    end
+end
+
+-- Closest vendor selling any of the items, shown like a single item's
+function MM:ShowVendorForItems(itemIDs, label)
+    local key, offer = self:ClosestVendorFor(itemIDs)
+    if not key then return self:ClearMinimapVendor() end
+    self:SetMinimapVendor(self.db.vendors[key], key, label, offer.limited and not offer.notSeen)
+end
+
+-- A set of service NPCs, like an item's vendors: the closest gets the marker
+function MM:ShowServicesOnMap(keys)
+    local closest = ClosestNPC(keys)
+    if closest then
+        self:SetMinimapVendor(self.services[closest], closest)
+    else
+        self:ClearMinimapVendor()
+    end
+end

@@ -1,0 +1,34 @@
+## Interface: 16001
+## Title: Merchant Map
+## Notes: Records vendor stock as you browse and shows where to buy items on the world map.
+## Author: Knofle
+## Version: 1.1.7
+## SavedVariables: MerchantMapDB, VendorAtlasDB
+## IconTexture: Interface\AddOns\MerchantMap\icon
+## X-Wago-ID: QNl4qxNe
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+Libs\LibSerialize\LibSerialize.lua
+Libs\LibDeflate\LibDeflate.lua
+
+Core.lua
+VendorData.lua
+VerifiedData.lua
+Seed.lua
+Categories.lua
+AutoCategories.lua
+Map.lua
+Pins.xml
+Minimap.lua
+Arrow.lua
+Widgets.lua
+Search.lua
+UI.lua
+StockWindow.lua
+SearchTips.lua
+MinimapButton.lua
+Share.lua
+Options.lua

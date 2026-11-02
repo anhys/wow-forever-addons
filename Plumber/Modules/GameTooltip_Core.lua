@@ -1,0 +1,495 @@
+local _, addon = ...
+local GameTooltipManager = {};
+addon.GameTooltipManager = GameTooltipManager;
+
+local After = C_Timer.After;
+local C_TooltipInfo = C_TooltipInfo;
+local GetItemIconByID = C_Item.GetItemIconByID;
+local GetItemLinkByGUID = C_Item.GetItemLinkByGUID;
+--local gsub = string.gsub;
+local match = string.match;
+local Secret_CanAccess = addon.API.Secret_CanAccess;
+local StripHyperlinks = addon.API.StripHyperlinks;
+
+
+local ItemIconInfoTable = {
+	width = 24,
+	height = 24,
+	margin = { left = 0, right = 4, top = 0, bottom = 0 },
+	--texCoords = { left = 0.0625, right = 0.9375, top = 0.0625, bottom = 0.9375 },
+	verticalOffset = 6;
+};
+
+
+local AltModeListener = CreateFrame("Frame");
+do
+	--Alt Mode Instruction Color: 0.000, 0.800, 1.000
+
+	function AltModeListener:OnUpdate(elapsed)
+		self.t = self.t + elapsed;
+		if self.t >= 0.5 then
+			self.t = nil;
+			self:SetScript("OnUpdate", nil);
+			self:UnregisterEvent("MODIFIER_STATE_CHANGED");
+		end
+	end
+
+	function AltModeListener:OnEvent(event, key, down)
+		if down == 1 and (key == "LALT" or key == "RALT") then
+			if self.handler then
+				self.handler:TriggerAltMode();
+			end
+		end
+	end
+
+	function AltModeListener:SetHandlerAndStart(handler)
+		if not self.t then
+			self:SetScript("OnEvent", self.OnEvent);
+			self:SetScript("OnUpdate", self.OnUpdate);
+			self:RegisterEvent("MODIFIER_STATE_CHANGED");
+		end
+		self.handler = handler;
+		self.t = 0;
+	end
+end
+
+
+local function GetModuleAltModeDBKey(module)
+	if module.hasAltMode then
+		return module:GetDBKey().."_AltMode"
+	end
+end
+
+local function LoadModuleAltMode(module)
+	local key = GetModuleAltModeDBKey(module);
+	if key then
+		module.altModeEnabled = addon.GetDBBool(key);
+	end
+end
+
+local function ToggleModuleAltMode(module)
+	local key = GetModuleAltModeDBKey(module);
+	if key then
+		addon.FlipDBBool(key);
+		LoadModuleAltMode(module);
+	end
+end
+
+
+local SubModuleMixin = {};
+do
+	function SubModuleMixin:ProcessData(tooltip, itemID)
+		if self.enabled then
+			-- Override
+		else
+			return false;
+		end
+	end
+
+	function SubModuleMixin:GetDBKey()
+		return self.dbKey;
+	end
+
+	function SubModuleMixin:SetEnabled(enabled)
+		self.enabled = enabled == true;
+		self.parentManager:RequestUpdate();
+
+		if self.OnEnabledStateChanged then
+			self:OnEnabledStateChanged(enabled);
+		end
+	end
+
+	function SubModuleMixin:IsEnabled()
+		return self.enabled == true;
+	end
+end
+
+
+local HandlerMixin = {};
+do
+	local ipairs = ipairs;
+
+	function HandlerMixin:AddSubModule(module)
+		for _, m in ipairs(self.modules) do
+			if m == module then
+				return
+			end
+		end
+		table.insert(self.modules, module);
+	end
+
+	function HandlerMixin:CallSubModules(tooltip, id, hyperlink)
+		self.altModeState = nil;
+		self.hideGenericAltInstruction = nil;
+		self.anyChange = nil;
+		self.currentTooltip = tooltip;
+
+		for _, m in ipairs(self.modules) do
+			m.altModeState = nil;
+			if m:ProcessData(tooltip, id, hyperlink) then
+				self.anyChange = true;
+				if m.hasAltMode then
+					if not self.altModeState then
+						self.altModeState = m.altModeState;
+					end
+					if m.HandleAltPressed then
+						self.hideGenericAltInstruction = true;
+					end
+				end
+			end
+		end
+
+		if self.altModeState then
+			AltModeListener:SetHandlerAndStart(self);
+			if (not self.hideGenericAltInstruction) and self.anyChange and tooltip:GetName() == "GameTooltip" then
+				tooltip:AddLine(" ");
+				if self.altModeState == 1 then
+					tooltip:AddLine(addon.L["Instruction Show Less Info"], 0.000, 0.800, 1.000, true);
+				else
+					tooltip:AddLine(addon.L["Instruction Show More Info"], 0.000, 0.800, 1.000, true);
+				end
+			end
+		end
+
+		if self.anyChange then
+			tooltip:Show();
+		end
+	end
+
+	function HandlerMixin:InitSubModules()
+		self.noModuleEnabled = true;
+
+		for _, m in ipairs(self.modules) do
+			if m:IsEnabled() then
+				self.noModuleEnabled = false;
+			end
+			if m.hasAltMode then
+				LoadModuleAltMode(m);
+			end
+		end
+
+		if not self.noModuleEnabled then
+			if not self.postCallAdded then
+				self.postCallAdded = true;
+				if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall then
+					TooltipDataProcessor.AddTooltipPostCall(self.tooltipDataType, self.ProcessDisplayedData);
+				else
+					print("Plumber AddOn Alert: WoW\'s TooltipDataProcessor methods changed.")
+				end
+			end
+		end
+	end
+
+	function HandlerMixin:RequestUpdate()
+		if not self.pauseUpdate then
+			self.pauseUpdate = true;
+			After(0, function()
+				self.pauseUpdate = nil;
+				self:InitSubModules();
+				GameTooltipManager:RequestUpdateDressUpModules();
+			end);
+		end
+	end
+
+	function HandlerMixin:AppendTooltipInfo(tooltip, method, arg1, arg2, arg3, arg4)
+		self.currentTooltip = tooltip;
+		if C_TooltipInfo[method] then
+			local tooltipData = C_TooltipInfo[method](arg1, arg2, arg3, arg4);
+			if tooltipData then
+				tooltip:AddLine(" ");
+				for i, lineData in ipairs(tooltipData.lines) do
+					tooltip:AddLineDataText(lineData);
+				end
+			end
+		end
+	end
+
+	function HandlerMixin:AppendItemInfo(tooltip, itemID)
+		self.currentTooltip = tooltip;
+		local tooltipData = C_TooltipInfo.GetItemByID(itemID);
+		if tooltipData then
+			tooltip:AddLine(" ");
+			for i, lineData in ipairs(tooltipData.lines) do
+				tooltip:AddLineDataText(lineData);
+				if i == 1 then
+					local icon = GetItemIconByID(itemID);
+					tooltip:AddTexture(icon, ItemIconInfoTable);
+				end
+			end
+		end
+	end
+
+	function HandlerMixin:TriggerAltMode()
+		if not (self.currentTooltip and self.currentTooltip:IsVisible()) then return end;
+
+		local anyChange;
+		for _, m in ipairs(self.modules) do
+			if m.hasAltMode and m:IsEnabled() then
+				if m.HandleAltPressed then
+					m:HandleAltPressed();
+				else
+					ToggleModuleAltMode(m);
+				end
+				anyChange = true;
+			end
+		end
+
+		if anyChange and self.currentTooltip.RebuildFromTooltipInfo then
+			self.currentTooltip:RebuildFromTooltipInfo();
+		end
+	end
+
+	function HandlerMixin:CreateSubModule(dbKey, asFrame)
+		local module = (asFrame and CreateFrame("Frame")) or {};
+		Mixin(module, SubModuleMixin);
+
+		module.parentManager = self;
+		module.dbKey = dbKey;
+
+		self:AddSubModule(module);
+
+		return module
+	end
+
+	function HandlerMixin:DebugAddField(tooltip, tbl, field, label, enumLookup)
+		local leftText, rightText;
+		if label then
+			leftText = string.format("- %s: %s", label, field);
+		else
+			leftText = field;
+		end
+
+		local value = tbl[field];
+
+		if value and enumLookup then
+			for k, v in pairs(Enum[enumLookup]) do
+				if v == value then
+					rightText = string.format("%s (%s)", value, k);
+					break
+				end
+			end
+		else
+			rightText = value;
+		end
+
+		if type(rightText) == "boolean" then
+			self:DebugPrintBool(tooltip, leftText, rightText);
+		else
+			if rightText then
+				tooltip:AddDoubleLine(leftText, rightText, 1, 0.82, 0, 1, 1, 1);
+			else
+				tooltip:AddDoubleLine(leftText, tostring(rightText), 1, 0.82, 0, 1, 0.125, 0.125);
+			end
+		end
+
+	end
+
+	function HandlerMixin:DebugPrintBool(tooltip, leftText, bool)
+		if bool then
+			tooltip:AddDoubleLine(leftText, tostring(bool), 1, 0.82, 0, 0.098, 1.000, 0.098);
+		else
+			tooltip:AddDoubleLine(leftText, tostring(bool), 1, 0.82, 0, 1, 0.125, 0.125);
+		end
+	end
+end
+
+
+do  --GameTooltipManager
+	GameTooltipManager.handlers = {};
+
+	function GameTooltipManager:GetHandler(tooltipDataType, useLeftTextAsArgument)
+		if not self.handlers[tooltipDataType] then
+			local handler = {};
+			self.handlers[tooltipDataType] = handler;
+			addon.API.Mixin(handler, HandlerMixin);
+
+			handler.modules = {};
+			handler.tooltipDataType = tooltipDataType;
+			handler.noModuleEnabled = true;
+			handler.isItemHandler = tooltipDataType == 0;
+			handler.isItemHandler = tooltipDataType == Enum.TooltipDataType.Item;
+
+			if useLeftTextAsArgument then
+				function handler.ProcessDisplayedData(tooltip)
+					if handler.noModuleEnabled then return; end
+					if tooltip.IsEmbedded then return; end -- Disabled for embedded tooltip. Maybe it will fix the taint?
+
+					local tooltipData = tooltip.infoList and tooltip.infoList[1] and tooltip.infoList[1].tooltipData;
+					if tooltipData and tooltipData.type == tooltipDataType then
+						local leftText = tooltipData.lines and tooltipData.lines[1] and tooltipData.lines[1].leftText;
+						if Secret_CanAccess(leftText) then
+							--leftText = gsub(leftText, "|T.+|t", "");
+							--leftText = gsub(leftText, "%\n.+", "");
+							--leftText = gsub(leftText, "|cff%w%w%w%w%w%w", "");
+							--leftText = gsub(leftText, "|r", "");
+							leftText = StripHyperlinks(leftText);
+							if leftText then
+								handler:CallSubModules(tooltip, leftText);
+							end
+						end
+					end
+				end
+			else
+				function handler.ProcessDisplayedData(tooltip)
+					if handler.noModuleEnabled then return; end
+					if tooltip.IsEmbedded then return; end -- Disabled for embedded tooltip. Maybe it will fix the taint?
+
+					local tooltipData = tooltip.infoList and tooltip.infoList[1] and tooltip.infoList[1].tooltipData;
+					if tooltipData and tooltipData.type == tooltipDataType then
+						local arg1 = tooltipData.id;
+						if Secret_CanAccess(arg1) then
+							local hyperlink;
+							if handler.isItemHandler and Secret_CanAccess(tooltipData.guid) then
+								hyperlink = GetItemLinkByGUID(tooltipData.guid);
+							else
+								hyperlink = tooltipData.hyperlink;
+							end
+							handler:CallSubModules(tooltip, arg1, hyperlink);
+						end
+					end
+				end
+			end
+		end
+		return self.handlers[tooltipDataType]
+	end
+
+	function GameTooltipManager:GetItemManager()
+		return self:GetHandler(Enum.TooltipDataType.Item)
+	end
+
+	function GameTooltipManager:GetSpellManager()
+		return self:GetHandler(Enum.TooltipDataType.Spell)
+	end
+
+	function GameTooltipManager:GetCurrencyManager()
+		return self:GetHandler(Enum.TooltipDataType.Currency)
+	end
+
+	function GameTooltipManager:GetMinimapManager()
+		local useLeftTextAsArgument = true;
+		return self:GetHandler(Enum.TooltipDataType.MinimapMouseover, useLeftTextAsArgument)
+	end
+
+	function GameTooltipManager:GetWorldObjectManager()
+		local useLeftTextAsArgument = true;
+		return self:GetHandler(Enum.TooltipDataType.Object, useLeftTextAsArgument)
+	end
+end
+
+
+do	--Ctrl+Click Bag Item Handler
+	local DressUpModules = {};
+	local FUNCTION_HOOKED = false;
+
+	local function DressUpItemLocation_Callback(itemLocation)
+		if itemLocation then
+			local itemID = C_Item.GetItemID(itemLocation);
+			if itemID then
+				for _, m in ipairs(DressUpModules) do
+					if m:IsEnabled() then
+						m:OnDressUpBagItem(itemID, itemLocation.bagID, itemLocation.slotIndex);
+					end
+				end
+			end
+		end
+	end
+
+	function GameTooltipManager:AddDressUpModule(module)
+		-- module is the same as SubModule
+		for _, m in ipairs(DressUpModules) do
+			if m == module then
+				return
+			end
+		end
+
+		if module.OnDressUpBagItem then
+			table.insert(DressUpModules, module);
+		else
+			error("GameTooltip Module Missing OnDressUpBagItem");
+		end
+	end
+
+	function GameTooltipManager:RequestUpdateDressUpModules()
+		if FUNCTION_HOOKED then return; end
+
+		local anyEnabled;
+		for _, m in ipairs(DressUpModules) do
+			if m:IsEnabled() then
+				anyEnabled = true;
+				break
+			end
+		end
+
+		if anyEnabled then
+			FUNCTION_HOOKED = true;
+			hooksecurefunc("DressUpItemLocation", DressUpItemLocation_Callback);
+		end
+	end
+end
+
+
+do  --APIs
+	function GameTooltipManager.ReplaceTooltipLine(tooltip, searchText, newText, r, g, b)
+		local found;
+		local fs;
+		local text;
+		local isLastLine = true;
+
+		for i = tooltip:NumLines(), 2, -1 do
+			fs = tooltip:GetLeftLine(i);
+			if fs then
+				text = fs:GetText();
+				if Secret_CanAccess(text) and text == searchText then
+					found = true;
+					if newText then
+						fs:SetText(newText);
+						if r then
+							fs:SetTextColor(r, g, b);
+						end
+					else
+						fs:SetText(nil);
+					end
+					break
+				end
+			end
+			isLastLine = false;
+		end
+
+		if not found then
+			isLastLine = false;
+		end
+
+		return found, isLastLine
+	end
+
+	function GameTooltipManager.ReplaceLineByMatching(tooltip, pattern, newText, r, g, b)
+		local found;
+		local fs, text;
+		local isLastLine = true;
+		for i = tooltip:NumLines(), 2, -1 do
+			fs = tooltip:GetLeftLine(i);
+			if fs then
+				text = fs:GetText();
+				if Secret_CanAccess(text) and match(text, pattern) then
+					found = true;
+					fs:SetText(newText);
+					if r then
+						fs:SetTextColor(r, g, b);
+					end
+					break
+				end
+			end
+			isLastLine = false;
+		end
+
+		if not found then
+			isLastLine = false;
+		end
+
+		return found, isLastLine
+	end
+
+	function GameTooltipManager.DeleteLineByMatching(tooltip, pattern)
+		return GameTooltipManager.ReplaceLineByMatching(tooltip, pattern)
+	end
+end

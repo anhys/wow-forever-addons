@@ -1,0 +1,80 @@
+## Interface: 30800
+## Title: QuestMaster
+## Notes: A comprehensive quest helper with navigation arrow, distance display, and objective tracking (All-in-One)
+## Notes-deDE: Ein umfassender Quest-Helper mit Richtungspfeil, Entfernungsanzeige und Ziel-Tracking (All-in-One)
+## Notes-frFR: Un assistant de quete complet avec fleche de navigation, affichage de distance et suivi des objectifs (All-in-One)
+## Notes-esES: Un ayudante de misiones completo con flecha de navegacion, visualizacion de distancia y seguimiento de objetivos (All-in-One)
+## Notes-esMX: Un ayudante de misiones completo con flecha de navegacion, visualizacion de distancia y seguimiento de objetivos (All-in-One)
+## Notes-ruRU: Comprehensive quest helper with navigation arrow, distance display, and objective tracking (All-in-One)
+## Notes-zhCN: Comprehensive quest helper (All-in-One)
+## Notes-zhTW: Comprehensive quest helper (All-in-One)
+## Notes-koKR: Comprehensive quest helper (All-in-One)
+## Notes-ptBR: Um assistente de missoes completo com seta de navegacao, exibicao de distancia e rastreamento de objetivos (All-in-One)
+## Author: QuestMaster Team
+## Version: 2.0.0
+## SavedVariables: QuestMasterSavedDB
+## SavedVariablesPerCharacter: QuestMasterCharDB
+## X-Category: Quests
+## X-Website: https://github.com/QuestMaster/QuestMaster
+## X-Curse-Project-ID: questmaster
+## X-Localizations: enUS, deDE, frFR, esES, esMX, ruRU, zhCN, zhTW, koKR, ptBR
+
+# Libraries
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\AceAddon-3.0\AceAddon-3.0.lua
+Libs\AceDB-3.0\AceDB-3.0.lua
+Libs\AceDBOptions-3.0\AceDBOptions-3.0.lua
+Libs\AceEvent-3.0\AceEvent-3.0.lua
+Libs\AceTimer-3.0\AceTimer-3.0.lua
+Libs\AceConsole-3.0\AceConsole-3.0.lua
+Libs\AceGUI-3.0\AceGUI-3.0.xml
+Libs\AceConfig-3.0\AceConfig-3.0.xml
+Libs\HereBeDragons-2.0\HereBeDragons-2.0.lua
+Libs\HereBeDragons-2.0\HereBeDragons-Pins-2.0.lua
+Libs\HereBeDragons-2.0\HereBeDragons-Migrate.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
+# Version Detection - must load first
+VersionDetect.lua
+
+# Database - must load before main addon
+Database\Init.lua
+Database\Wrath\QuestData.lua
+Database\Wrath\CreatureData.lua
+Database\Wrath\GameObjectData.lua
+Database\Wrath\ItemSourceData.lua
+Database\DatabaseLoader.lua
+
+# Localization
+Locales\enUS.lua
+Locales\deDE.lua
+Locales\frFR.lua
+Locales\esES.lua
+Locales\ruRU.lua
+Locales\zhCN.lua
+Locales\zhTW.lua
+Locales\koKR.lua
+Locales\ptBR.lua
+
+# Core
+QuestMaster.lua
+
+# Modules
+Modules\Database.lua
+Modules\Arrow.lua
+Modules\Tracker\Core.lua
+Modules\Tracker\Helpers.lua
+Modules\Tracker\Sorting.lua
+Modules\Tracker\Distance.lua
+Modules\Tracker\Actions.lua
+Modules\Tracker\Menu.lua
+Modules\QuestTracker.lua
+Modules\MapPins.lua
+Modules\ObjectiveFrame.lua
+Modules\PartySync.lua
+Modules\Options.lua
+Modules\MinimapButton.lua
+Modules\Dashboard.lua
+Modules\Credits.lua

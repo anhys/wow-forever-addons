@@ -1,0 +1,14 @@
+Expressway Rg Bold, version 2.100
+Copyright (c) 2005 Typodermic.
+Expressway is a trademark of Typodermic.
+
+This notice grants no additional rights to
+redistribute the font separately or use it in other products.
+
+Unmodified font file, stored as Expressway-Bold.ttf to distinguish it from
+the separately licensed Expressway Free Regular font in this directory.
+The original embedded copyright notices remain intact.
+
+Typeface publisher: Typodermic Fonts
+https://typodermicfonts.com/expressway/
+SHA256: 06A2106170C2B5B736955CC749ED755F3757D103230645158F0BD5B5B91C386B

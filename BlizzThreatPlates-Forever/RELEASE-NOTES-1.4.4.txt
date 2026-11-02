@@ -1,0 +1,9 @@
+1.4.4 - Compatibility & Nameplate Polish
+
+- Compatibility Mode now starts with threat text only. Use Optional Features to enable the extras you want alongside another nameplate addon.
+- Turning Compatibility Mode off restores your previous feature settings and selected BTP style, including non-target brightness.
+- Added independent alignment and visibility controls for enemy names, health percentages and health values, saved per style.
+- Added a Show on Friendly Nameplates toggle for Target of Target.
+- Cleaned up the Style and Target of Target settings layouts. Disable Mob Level and Liquid Threat controls stay in Size & Shape.
+- Quest icons remain visible with left-side CC. CC moves closer when the quest icon is clear of its row and makes room when needed; threat-number spacing follows.
+- Fixed combo-point Liquid Swirl failing to animate in the preview on fresh installs. Animation also resumes correctly after layout changes and reopening the page.

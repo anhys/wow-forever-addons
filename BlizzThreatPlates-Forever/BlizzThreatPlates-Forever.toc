@@ -1,0 +1,48 @@
+## Interface: 16001
+## Title: BlizzThreatPlates-Forever
+## Notes: Customizable nameplates, threat percentages, threat differential snapshots, and target-of-target text for WoW Forever.
+## Version: 1.4.4
+## IconTexture: Interface\AddOns\BlizzThreatPlates-Forever\Icon.tga
+## SavedVariables: ForeverNameplatesDB
+
+Core.lua
+FontUtilities.lua
+NameplateBitfields.lua
+NameplateStyles.lua
+NameplateTextAlignment.lua
+JundiesStyle.lua
+PlayerColors.lua
+NameplateDimensions.lua
+NameplatePreview.lua
+CastbarPreview.lua
+DebuffPreview.lua
+NameplateAttachments.lua
+ATDCastbar.lua
+LiquidThreat.lua
+ATDStyle.lua
+NativeCCFallback.lua
+TargetNames.lua
+NativeSpellTarget.lua
+Threat.lua
+# Experimental border colors.
+NameplateBorders.lua
+MobNameSize.lua
+ThreatDisplayColors.lua
+ThreatDifferential.lua
+ThreatPercentage.lua
+QuestMarkers.lua
+QuestIconPreview.lua
+Options.lua
+EnemyDebuffsOptions.lua
+TargetOfTargetOptions.lua
+ModernQuestIconOptions.lua
+LiquidThreatOptions.lua
+ModernNameplatesOptions.lua
+ComboPoints.lua
+BorderOptions.lua
+ModernThreatOptions.lua
+GeneralOptions.lua
+OptionsNewFeatures.lua
+OptionsSidebar.lua
+Minimap.lua
+Welcome.lua

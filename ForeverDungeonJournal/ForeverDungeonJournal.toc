@@ -1,0 +1,91 @@
+## Interface: 11509
+## Title: Dungeon Journal
+## Notes: Dungeon boss, loot, quest and map journal for Classic Era and Hardcore (all 26 Vanilla dungeon wings and all 7 original raids).
+## Author: Exehn
+## Version: 1.0.3
+## IconTexture: Interface\Icons\INV_Misc_Book_09
+## AddonCompartmentFunc: ForeverDungeonJournal_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: ForeverDungeonJournal_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: ForeverDungeonJournal_OnAddonCompartmentLeave
+## SavedVariables: ForeverDungeonJournalDB
+## SavedVariablesPerCharacter: ForeverDungeonJournalCharacterDB
+
+
+Core\Bootstrap.lua
+Localization\Localization.lua
+Localization\Locale_frFR.lua
+Localization\Locale_esES.lua
+Localization\Locale_ruRU.lua
+Localization\Locale_itIT.lua
+Localization\Locale_ptBR.lua
+Localization\Locale_koKR.lua
+Localization\Locale_zhCN.lua
+Localization\Locale_zhTW.lua
+Localization\Content_deDE.lua
+Localization\Content_frFR.lua
+Localization\Content_esES.lua
+Localization\Content_ruRU.lua
+Localization\Content_itIT.lua
+Localization\Content_ptBR.lua
+Localization\Content_koKR.lua
+Localization\Content_zhCN.lua
+Localization\Content_zhTW.lua
+Localization\Content_NewDungeons.lua
+Localization\Content_OfficialNames.lua
+Localization\Content_OfficialQuests.lua
+Localization\Content_QuestText.lua
+Data\Dungeons.lua
+Data\DungeonEntrances.lua
+Data\DungeonRoutes.lua
+Data\Bosses.lua
+Data\QuestMaps.lua
+Data\QuestChains.lua
+Data\QuestRewards.lua
+Data\QuestShareability.lua
+Data\QuestUpdates.lua
+Data\ClassicEra.lua
+Data\ClassicEraQuestShareability.lua
+Data\TBCVanillaDungeons.lua
+Data\TBCAnniversaryPolish.lua
+Data\TBCCompendiumQuests.lua
+Data\TBCQuestPolish.lua
+UI\ThemeData.lua
+Data\TBCBossLevels.lua
+Data\ClassicEraBossLevels.lua
+Data\TBCLootAudit.lua
+Data\VanillaRaids.lua
+Data\VanillaRaidLoot.lua
+Data\VanillaRaidQuests.lua
+Data\TBCQuestClassification.lua
+Data\TBCQuestListConsolidation.lua
+Data\ClassicEraQuestFixes.lua
+Data\RandomEnchants.lua
+UI\ItemComparisonData.lua
+Systems\MapMarkers.lua
+Systems\LootFilter.lua
+Systems\Favourites.lua
+Systems\BugReport.lua
+Data\TierTokenRewards.lua
+Systems\PortraitPool.lua
+Systems\SeasonalQuests.lua
+Systems\QuestProfessions.lua
+Core\Journal.lua
+Systems\TierTokenChooser.lua
+Systems\VanillaRaidMaps.lua
+Systems\ClassicDungeonMaps.lua
+Systems\ForeverBetaSharedArt.lua
+Systems\ScarletWing.lua
+Systems\ItemSource.lua
+Systems\SettingsPanel.lua
+Systems\ItemIdLearner.lua
+Systems\BossSummon.lua
+Systems\MapNote.lua
+Systems\TooltipBacking.lua
+Systems\DoneTickTooltip.lua
+Systems\HomeBottomBand.lua
+Systems\ClassicEraLFG.lua
+Systems\QuestText.lua
+Systems\MapBossSize.lua
+Systems\WorldMapOverlay.lua
+Systems\Resize.lua
+Systems\OptionsPanel.lua

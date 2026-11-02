@@ -1,0 +1,300 @@
+local _, addon = ...
+local L = addon.L;
+local API = addon.API;
+local Housing = addon.Housing;
+
+
+local IsInsideHouseOrPlot = C_Housing.IsInsideHouseOrPlot;
+local IsOnNeighborhoodMap = C_Housing.IsOnNeighborhoodMap;
+
+
+local function IsInHousingZone()
+	return IsInsideHouseOrPlot() or IsOnNeighborhoodMap()
+end
+
+
+local Flags = {};
+local Commands = {};
+
+
+do  --Teleport Home Macro    #plumber:home
+	local COMMAND_HOME = "home";    --Teleport Home
+
+	local function GetDynamicTeleportAction()
+		local icon, macro, tooltip;
+		if not Housing.ShouldShowTeleportToPlot() then
+			icon = 236350;
+			macro = Housing.GetLeaveHomeMacro();
+			tooltip = L["Leave Home"];
+		else
+			icon = 7252953;
+			macro = Housing.GetTeleportHomeMacro();
+			tooltip = L["Teleport Home"];
+		end
+		return icon, macro, tooltip
+	end
+	Housing.GetDynamicTeleportAction = GetDynamicTeleportAction;
+
+	local function GetDynamicTeleportAllianceAction()
+		local icon, macro, tooltip;
+		if not Housing.ShouldShowTeleportToPlot(1) then
+			icon = 236350;
+			macro = Housing.GetLeaveHomeMacro();
+			tooltip = L["Leave Home"];
+		else
+			icon = 236761;
+			macro = Housing.GetTeleportAllianceHomeMacro();
+			tooltip = Housing.GetAllianceMapName();
+		end
+		return icon, macro, tooltip
+	end
+	Housing.GetDynamicTeleportAllianceAction = GetDynamicTeleportAllianceAction;
+
+	local function GetDynamicTeleportHordeAction()
+		local icon, macro, tooltip;
+		if not Housing.ShouldShowTeleportToPlot(2) then
+			icon = 236350;
+			macro = Housing.GetLeaveHomeMacro();
+			tooltip = L["Leave Home"];
+		else
+			icon = 236756;
+			macro = Housing.GetTeleportHordeHomeMacro();
+			tooltip = Housing.GetHordeMapName();
+		end
+		return icon, macro, tooltip
+	end
+	Housing.GetDynamicTeleportHordeAction = GetDynamicTeleportHordeAction;
+
+	local function WriteFunc_home(body)
+		local header = "#plumber:"..COMMAND_HOME;
+		local icon, macro = GetDynamicTeleportAction();
+		body = header.."\n"..macro;
+		return body, icon
+	end
+
+	local function Generator_home()
+		local name = L["Teleport Home"];
+		local body, icon = WriteFunc_home();
+		if not body then
+			body = "#plumber:"..COMMAND_HOME;
+			icon = 7252953;
+		end
+		return name, icon, body
+	end
+
+	function Housing.AcquireTeleportHomeMacro()
+		return addon.AcquireCharacterMacro(COMMAND_HOME, Generator_home)
+	end
+
+
+	local function GetOverrideDrawerInfo()
+		local actionType = "teleportHome";
+
+		local icon, macroText, name = GetDynamicTeleportAllianceAction();
+		local info1 = {
+			tooltipLineText = name,
+			icon = icon,
+			actionType = actionType,
+			id = 1,
+			usable = true,
+			macroText = macroText,
+		};
+
+		icon, macroText, name = GetDynamicTeleportHordeAction();
+		local info2 = {
+			tooltipLineText = name,
+			icon = icon,
+			actionType = actionType,
+			id = 2,
+			usable = true,
+			macroText = macroText,
+		};
+
+		return {info1, info2};
+	end
+	Housing.GetOverrideDrawerInfo_TeleportHome = GetOverrideDrawerInfo;
+
+	local TeleportHomeCommand = {
+		command = COMMAND_HOME,
+		name = L["PlumberMacro Housing"],
+		modifyType = "Overwrite",
+		conditionFunc = IsInHousingZone,
+
+		events = {
+			"HOUSE_PLOT_ENTERED",
+			"HOUSE_PLOT_EXITED",
+		},
+
+		writeFunc = WriteFunc_home,
+
+		shouldUseDrawer = Housing.DoesPlayerHaveMultipleHomes,
+		getOverrideDrawerInfo = GetOverrideDrawerInfo,
+	};
+
+	table.insert(Commands, TeleportHomeCommand);
+end
+
+
+do  --Toggle Torch Macro    #plumber:torch
+	local COMMAND_TORCH = "torch";    --Teleport Home
+	local GetUnitAuraBySpellID = C_UnitAuras.GetUnitAuraBySpellID;
+
+	local ItemInfo = {
+		name = "Cave Spelunker's Torch",
+		itemID = 224552,
+		spellID = 453163,
+		icon = 135432,
+		litIcon = 135432,
+		unlitIcon = 135434,
+	};
+
+	function ItemInfo:LoadItemName()
+		local _, name = C_ToyBox.GetToyInfo(self.itemID);
+		if name then
+			self.localizedName = name;
+		end
+	end
+	ItemInfo:LoadItemName();
+
+	function ItemInfo:GetItemName()
+		return self.auraName or self.localizedName or self.name
+	end
+
+	local function ConditionFunc_torch()
+		--Return Action:   true(use torch)   false(cancel torch)    nil(don't change macro)
+
+		if IsInHousingZone() then
+			local aura = GetUnitAuraBySpellID("player", ItemInfo.spellID);
+			if aura then
+				if not ItemInfo.auraName then
+					ItemInfo.auraName = aura.name;
+				end
+				return false
+			else
+				return true
+			end
+		else
+			return nil
+		end
+	end
+
+	local function WriteFunc_torch(body)
+		local header = "#plumber:"..COMMAND_TORCH;
+		local icon;
+		body = header;
+		if ConditionFunc_torch() then
+			body = string.format("%s\n#showtooltip %s\n/use \"item:%s\"", body, ItemInfo:GetItemName(), ItemInfo.itemID);
+			icon = ItemInfo.litIcon;
+		else
+			body = body.."\n/cancelaura "..(ItemInfo.auraName or ItemInfo.localizedName or ItemInfo.name);
+			icon = ItemInfo.unlitIcon;
+		end
+		return body, icon
+	end
+
+	local function Generator_torch()
+		local name = L["Toggle Torch"];
+		local body, icon = WriteFunc_torch();
+		if not body then
+			body = "#plumber:"..COMMAND_TORCH;
+			icon = ItemInfo.icon;
+		end
+		return name, icon, body
+	end
+
+	function Housing.AcquireTorchMacro()
+		return addon.AcquireCharacterMacro(COMMAND_TORCH, Generator_torch)
+	end
+
+	local ToggleTorchCommand = {
+		command = COMMAND_TORCH,
+		name = L["PlumberMacro Torch"],
+		modifyType = "Overwrite",
+		conditionFunc = ConditionFunc_torch,
+		events = {
+			"HOUSE_PLOT_ENTERED",
+			"HOUSE_PLOT_EXITED",
+			"UNIT_AURA",
+		},
+		writeFunc = WriteFunc_torch,
+	};
+
+	table.insert(Commands, ToggleTorchCommand);
+end
+
+
+addon.CallbackRegistry:Register("DBLoaded", function()
+	for _, command in ipairs(Commands) do
+		addon.AddPlumberMacro(command);
+	end
+end);
+
+
+local function HousingDashboard_OnLoaded(HousingDashboardFrame)
+	if not Flags.TeleportToHouseButton then
+		Flags.TeleportToHouseButton = true;
+
+		local blizzardDropdown = HousingDashboardFrame.HouseDropdown;
+		if blizzardDropdown then
+			blizzardDropdown.playerHouseList = nil;
+		end
+
+		local TeleportButton = HousingDashboardFrame.HouseInfoContent.ContentFrame.HouseUpgradeFrame.TeleportToHouseButton;
+		if TeleportButton then
+			TeleportButton:RegisterForDrag("LeftButton");
+
+			TeleportButton:HookScript("OnDragStart", function(self)
+				if TeleportButton.Icon then
+					TeleportButton.Icon:SetPoint("CENTER", 0, 0);
+				end
+				if (not Flags.macroEnabled) or InCombatLockdown() then return end;
+				local macroID = Housing.AcquireTeleportHomeMacro();
+				if macroID then
+					PickupMacro(macroID);
+				end
+			end);
+
+			TeleportButton:HookScript("OnEnter", function(self)
+				if (not Flags.macroEnabled) or InCombatLockdown() or (API.IsCharacterMarcoFull()) then return end;
+				local tooltip = GameTooltip;
+				if tooltip:IsShown() and tooltip:GetOwner() == self then
+					tooltip:AddLine(L["Instruction Drag To Action Bar"], 0.098, 1.000, 0.098, true);
+					tooltip:Show();
+				end
+			end);
+		else
+			API.PrintMessage("TeleportToHouseButton is missing");
+		end
+	end
+end
+
+
+local function EnableModule(state)
+	state = true;   --Always ON
+	Housing.RequestUpdateHouseInfo();
+	Flags.macroEnabled = state;
+	if state then
+		addon.BlizzardFrameUtil:AddFrameModifier("HousingDashboardFrame", HousingDashboard_OnLoaded);
+	else
+		addon.BlizzardFrameUtil:RemoveFrameModifier("HousingDashboardFrame", HousingDashboard_OnLoaded);
+	end
+end
+
+local moduleData = {
+	name = addon.L["ModuleName Housing_Macro"],
+	dbKey ="Housing_Macro",
+	description = addon.L["ModuleDescription Housing_Macro"],
+	toggleFunc = EnableModule,
+	categoryID = 1,
+	uiOrder = 1,
+	moduleAddedTime = 1764600000,
+	virtual = true,
+	categoryKeys = {
+		"Housing",
+	},
+	searchTags = {
+		"Housing",
+	},
+};
+
+addon.ControlCenter:AddModule(moduleData);

@@ -1,0 +1,40 @@
+## Interface: 16001
+## Title: ItemTree Professions
+## Notes: ItemTree's optional Professions tab. ItemTree loads it only when the tab is turned on.
+## Author: Rockjaw Bonesnapper Co
+## Version: v0.1.19
+## LoadOnDemand: 1
+## Dependencies: ItemTree
+## IconTexture: Interface\AddOns\ItemTree\Art\minimap
+## X-License: All Rights Reserved
+## X-Curse-Project-ID: 1711215
+## X-Wago-ID: 5NRgev63
+
+# The optional Professions tab (brief PR3): its code and its compact data, in a load on demand
+# folder of its own so a player who leaves the tab off loads none of it. ItemTree's stub
+# (UI/ProfessionsStub.lua) registers the setting and the tab, and asks the client to load this
+# folder at login when the setting is on, when the player turns it on, or on the tab's first show
+# (Core/Modules.lua). Every file here registers into ItemTree's namespace through the global
+# ItemTree, the way ItemTree_Data's modules do.
+#
+# The project ids above are ItemTree's own, so an addon manager reads this folder as part of the
+# same project. X-WoWI-ID is deliberately absent: the packager takes the first value it finds in
+# any TOC it reads, and ItemTree.toc leaves that line blank on purpose (docs/release.md).
+
+Data\generated\Data.xml
+Core\Professions.lua
+Core\Craft.lua
+# Brief OPT4: the small client helpers the tab's UI files share, before the first that takes them.
+UI\Kit.lua
+UI\Queue.lua
+Module.lua
+UI\Skin.lua
+UI\Bar.lua
+UI\Trainers.lua
+UI\Layout.lua
+# Brief TP1 (QA item 210): the tracked professions on the strip, read by UI\Pane.lua at draw time.
+UI\Track.lua
+UI\Pane.lua
+# Brief UI15 (QA item 209): the "View in ItemTree" button on the client's profession window, built as
+# this folder loads.
+UI\WindowButton.lua

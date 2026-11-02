@@ -1,0 +1,148 @@
+## Interface: 16001
+## Title: ItemTree
+## Notes: What is this item used for? Crafting chains, quests, disenchanting, drops and vendors, with New and Changed flags compared with Classic Era.
+## Author: Rockjaw Bonesnapper Co
+## Version: v0.1.19
+## SavedVariables: ItemTreeDB
+## SavedVariablesPerCharacter: ItemTreeCharDB
+## IconTexture: Interface\AddOns\ItemTree\Art\minimap
+## AddonCompartmentFunc: ItemTree_OnAddonCompartmentClick
+## X-Website: https://www.curseforge.com/wow/addons/itemtree
+## X-License: All Rights Reserved
+## X-Category: Professions
+# Load order only, and every one of them is optional: Providers\ reads a source database the
+# player has already installed and ships none of it. The names are addon FOLDERS, which is what
+# the client matches: AllTheThings\AllTheThings.toc and Questie\Questie.toc.
+## OptionalDeps: AllTheThings, Questie
+## X-Curse-Project-ID: 1711215
+## X-Wago-ID: 5NRgev63
+## X-WoWI-ID:
+
+# Interface 16001 is the WoW Forever beta (client 1.60.1, product wow_classic_beta). ItemTree
+# is listed for the Forever client only at this stage, which is what keeps the addon sites from
+# offering it to Classic Era players. Adding another flavour later is one more number on the
+# Interface line above plus the notes in docs/release.md. Classic Era 1.15.9 stays the data
+# baseline the New and Changed flags compare against, which is a fact about the data, not a
+# client the addon is listed for.
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+
+Locales\enUS.lua
+
+Core\Init.lua
+# Brief G1: the error boundary, before anything that runs under it.
+Core\Guard.lua
+# Brief OPT4: the small helpers several files share (numbers, trim, saved variable sizes, client
+# lookups), before every file that takes them. After Guard.lua, which must stay second.
+Core\Util.lua
+# Brief BQ13: the demo state (what the addon thinks the character is, memory only). Read at call time
+# by Keep, Gear, the API and the tooltip, so it only has to load before the commands run.
+Core\Demo.lua
+Core\Data.lua
+# The on demand loader for the optional addon folders (brief PR3), before the stubs that use it.
+Core\Modules.lua
+Core\Edges.lua
+Core\Confidence.lua
+Core\Privacy.lua
+Core\Graph.lua
+Core\Prices.lua
+# Brief K20c: the price formula, read by Core\Keep.lua for the Bar.
+Core\PriceFormula.lua
+# Brief K25: the consumable facts over the ItemEffects data; Core\Keep.lua reads them where they ship.
+Core\Consumables.lua
+Core\Keep.lua
+# Brief K20-facts: the gear and disenchant value facts; Core\Keep.lua reads both (brief K20-wire).
+Core\Gear.lua
+Core\DisenchantValue.lua
+Core\Diff.lua
+Core\ViewModel.lua
+Core\Skills.lua
+# Brief TP1 (QA item 210): the professions a character tracks without having them, read at call time by
+# Core\Keep.lua and the Professions model.
+Core\TrackedProfessions.lua
+Core\Chain.lua
+Core\Sources.lua
+Core\EraSources.lua
+Core\CreatureLookup.lua
+Core\Creatures.lua
+Core\PlayerSources.lua
+Core\ForeverVendors.lua
+Core\GuessSources.lua
+Core\History.lua
+Core\Collector.lua
+Core\Ledger.lua
+Core\Places.lua
+# Brief FE1: the beta event fence's constants, which the share text applies; before Core\Share.lua.
+Core\BetaFence.lua
+# Brief SH1: the Share your finds text, pure; UI\Share.lua shows it.
+Core\Share.lua
+Core\RealmCheck.lua
+Core\Quests.lua
+Core\QuestFlags.lua
+# Brief GF5: the predicted quest facts' reader, after Core\QuestFlags.lua whose client title its namer
+# asks first; its provider and namer register after every other one, so a fact of ours always wins.
+Core\QuestsPredicted.lua
+# Brief IC1: the predicted item sources' reader, after Core\QuestsPredicted.lua whose page keys it reads;
+# its provider registers after every other one, so a source of ours always wins.
+Core\ItemsPredicted.lua
+Core\Discoveries.lua
+Core\BossLoot.lua
+# Brief PR29: the nearest vendor for the Sold by header's "Show nearest" button. Reads
+# Core\EraSources.lua, Core\ForeverVendors.lua and Core\Sources.lua at call time.
+Core\Nearest.lua
+# Brief S8: the trainer search ("t:lw", "trainer:hunter") the search box asks. Reads the Classic Era
+# table, the Creatures and PlayerSources modules and the places store at call time.
+Core\TrainerSearch.lua
+# Brief IT1: ItemTreeAPI, the read only public API, after Core\Keep.lua and every module it reads.
+Core\API.lua
+
+Data\generated\Data.xml
+Data\curated\Curated.lua
+Data\curated\Quests.lua
+Data\curated\Tools.lua
+
+Providers\Registry.lua
+Providers\AllTheThings.lua
+Providers\Questie.lua
+
+UI\Theme.lua
+UI\Sound.lua
+UI\Assets.lua
+UI\Toast.lua
+UI\Badges.lua
+UI\Tooltip.lua
+# Brief CS1: the comparison tooltips on the left of a hover in the window, after UI\Tooltip.lua.
+UI\Compare.lua
+UI\Keybind.lua
+UI\ItemClick.lua
+UI\CollectorHooks.lua
+UI\Client.lua
+UI\PlayerSkills.lua
+UI\Frame.lua
+UI\Sidebar.lua
+UI\InfoPanel.lua
+UI\Tree.lua
+# After UI\Tree.lua, whose Map tab seam it fills in (Tree.MapPainter, Tree.MapCleaner), and
+# before the owner's diagnostic further down, which shares its tile arithmetic.
+UI\Map.lua
+UI\ZoneItems.lua
+UI\Chain.lua
+UI\Discoveries.lua
+UI\BossLoot.lua
+# The Professions tab's stub (brief PR3): after UI\BossLoot.lua, so the tab sits after Boss loot.
+UI\ProfessionsStub.lua
+UI\History.lua
+UI\Overlay.lua
+UI\QuestFlags.lua
+UI\Options.lua
+UI\OptionsPreview.lua
+UI\Minimap.lua
+# Brief LDB1: the broker launcher. No library is shipped; it uses a broker display's own copy.
+UI\DataBroker.lua
+UI\EditMode.lua
+
+UI\Report.lua
+# Brief SH1: the Share your finds window and the header button UI\Frame.lua builds beside the dice.
+UI\Share.lua
+UI\Slash.lua

@@ -1,0 +1,138 @@
+## Interface: 50504
+## Version: 0.9.11
+## Title: TrainerSpells by |cff55d2ffD4KiR |T132115:16:16:0:0|t
+## Notes: An add-on that shows you what you can learn at a classtrainer.
+## Notes-deDE: Ein Add-on das dir alle lernbaren Fähigkeiten von einem Klassenlehrer anzeigt.
+## Notes-esES: Un complemento que te muestra lo que puedes aprender de un entrenador de clase.
+## Notes-esMX: Un complemento que te muestra lo que puedes aprender de un entrenador de clase.
+## Notes-frFR: Un module complémentaire qui vous montre ce que vous pouvez apprendre auprès d'un maître de classe.
+## Notes-itIT: Un add-on che ti mostra cosa puoi imparare da un maestro di classe.
+## Notes-koKR: 직업 훈련관에게서 배울 수 있는 것을 보여주는 애드온입니다.
+## Notes-ptBR: Um addon que mostra o que você pode aprender com um treinador de classe.
+## Notes-ruRU: Аддон, который показывает, что вы можете изучить у наставника класса.
+## Notes-zhCN: 一个显示你可以从职业训练师那里学到什么的插件。
+## Notes-zhTW: 一個顯示你可以從職業訓練師那裡學到什麼的外掛。
+## Author: D4KiR |T132115:16:16:0:0|t
+## Category: User Interface
+## Category-deDE: Benutzerinterface
+## Category-esES: Interfaz de usuario
+## Category-esMX: Interfaz de usuario
+## Category-frFR: Interface utilisateur
+## Category-itIT: Interfaccia utente
+## Category-koKR: 사용자 인터페이스
+## Category-ptBR: Interface do usuário
+## Category-ruRU: Интерфейс пользователя
+## Category-zhCN: 用户界面
+## Category-zhTW: 使用者介面
+## OptionalDeps: AzerothCompendium
+## DefaultState: enabled
+## SavedVariables: TrainerSpells_Global, TrainerSpells_Data, TrainerSpells_PetData, TrainerSpells_PetTrainerData, TrainerSpells_ProfessionData, TrainerSpells_IgnoredProfessions
+## SavedVariablesPerCharacter: TrainerSpells_Character, TrainerSpells_Ignored, TrainerSpells_IgnoredNames
+## X-Curse-Project-ID: 1596644
+## X-Wago-ID: L6J9VWNv
+## IconTexture: 133741
+
+libs\D4Lib\D4Lib.xml
+
+locale\deDE.lua
+locale\enUS.lua
+locale\esES.lua
+locale\esMX.lua
+locale\frFR.lua
+locale\itIT.lua
+locale\koKR.lua
+locale\ptBR.lua
+locale\ruRU.lua
+locale\zhCN.lua
+locale\zhTW.lua
+
+data\mists\Leatherworking.lua
+data\mists\Alchemy.lua
+data\mists\Blacksmithing.lua
+data\mists\Tailoring.lua
+data\mists\Engineering.lua
+data\mists\Enchanting.lua
+data\mists\Jewelcrafting.lua
+data\mists\Inscription.lua
+data\mists\Cooking.lua
+data\mists\FirstAid.lua
+data\mists\Herbalism.lua
+data\mists\Mining.lua
+data\mists\Skinning.lua
+data\mists\Fishing.lua
+data\mists\Archaeology.lua
+
+data\mists\ProfessionTrainers.lua
+data\ProfessionRecipes.lua
+
+data\classicera\LeatherworkingRecipes.lua
+data\classicera\AlchemyRecipes.lua
+data\classicera\BlacksmithingRecipes.lua
+data\classicera\TailoringRecipes.lua
+data\classicera\EngineeringRecipes.lua
+data\classicera\EnchantingRecipes.lua
+data\classicera\CookingRecipes.lua
+data\classicera\FirstAidRecipes.lua
+
+data\tbc\LeatherworkingRecipes.lua
+data\tbc\AlchemyRecipes.lua
+data\tbc\BlacksmithingRecipes.lua
+data\tbc\TailoringRecipes.lua
+data\tbc\EngineeringRecipes.lua
+data\tbc\EnchantingRecipes.lua
+data\tbc\JewelcraftingRecipes.lua
+data\tbc\CookingRecipes.lua
+
+data\wrath\LeatherworkingRecipes.lua
+data\wrath\AlchemyRecipes.lua
+data\wrath\BlacksmithingRecipes.lua
+data\wrath\TailoringRecipes.lua
+data\wrath\EngineeringRecipes.lua
+data\wrath\EnchantingRecipes.lua
+data\wrath\JewelcraftingRecipes.lua
+data\wrath\InscriptionRecipes.lua
+data\wrath\CookingRecipes.lua
+data\wrath\FirstAidRecipes.lua
+data\wrath\MiningRecipes.lua
+
+data\cata\LeatherworkingRecipes.lua
+data\cata\AlchemyRecipes.lua
+data\cata\BlacksmithingRecipes.lua
+data\cata\TailoringRecipes.lua
+data\cata\EngineeringRecipes.lua
+data\cata\EnchantingRecipes.lua
+data\cata\JewelcraftingRecipes.lua
+data\cata\InscriptionRecipes.lua
+data\cata\CookingRecipes.lua
+data\cata\FirstAidRecipes.lua
+data\cata\FishingRecipes.lua
+
+data\mists\LeatherworkingRecipes.lua
+data\mists\AlchemyRecipes.lua
+data\mists\BlacksmithingRecipes.lua
+data\mists\TailoringRecipes.lua
+data\mists\EngineeringRecipes.lua
+data\mists\EnchantingRecipes.lua
+data\mists\JewelcraftingRecipes.lua
+data\mists\InscriptionRecipes.lua
+data\mists\CookingRecipes.lua
+
+core\Init.lua
+core\Pricing.lua
+core\Settings.lua
+core\PetNames.lua
+core\BuiltinMerge.lua
+core\RecipeKnowledge.lua
+core\TrainerCapture.lua
+core\PetMerchantCapture.lua
+core\TrainerListUI.lua
+core\Ignore.lua
+core\Events.lua
+
+ui\Core.lua
+ui\ClassData.lua
+ui\ClassList.lua
+ui\TrainerLocations.lua
+ui\Profession.lua
+ui\Spellbook.lua
+ui\RowHeightSync.lua

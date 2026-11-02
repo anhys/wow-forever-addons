@@ -1,0 +1,64 @@
+ItemTree
+Copyright (c) 2026 Rockjaw Bonesnapper Co. All rights reserved.
+
+The contents of this add-on, excluding the third party material named below, fall under the above
+copyright. The author grants the following permissions.
+
+  * Permission to download, install, run and read ItemTree for personal use, without restriction,
+    and to keep as many copies and backups of it as you find useful.
+
+  * Permission to modify your own copy of ItemTree for your own use, and to keep those
+    modifications across updates.
+
+  * Permission to include ItemTree in a user interface compilation or add-on pack distributed on
+    CurseForge, Wago Addons or WoWInterface, as long as it is included whole and unmodified, with
+    this file, and credited to its author.
+
+  * Uploading ItemTree to CurseForge, Wago Addons or WoWInterface authorises those sites, and the
+    add-on managers that install from them, to host and distribute it under their own terms.
+    Nothing here is intended to cut across that.
+
+  * ItemTree may not otherwise be redistributed, in whole or in part, modified or unmodified,
+    without prior written permission from the author. That includes uploading it on its own,
+    publishing a modified version of it, and folding any part of it into another work.
+
+  * The name ItemTree and the name of its author may not be used to promote or endorse another
+    work without prior written permission.
+
+Every file in ItemTree is plain, readable Lua text. None of it is compiled, packed or obfuscated,
+so the add-on you install is the add-on you can read.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Third party material
+--------------------
+
+ItemTree_Data/Data/generated/EraSources.lua and ItemTree_Data/Data/generated/BossLoot.lua (in
+the ItemTree_Data folder, which a release ships beside ItemTree). These two files are compiled from
+the CMaNGOS Classic content database (github.com/cmangos/classic-db), which is licensed under the
+GNU General Public License version 3, and hold data derived from it alone, so these two files alone
+are distributed under GPL-3.0 rather than the terms above. The files beside them that the addon
+joins them to, ItemTree_Data/Data/generated/EraPlaces.lua and
+ItemTree_Data/Data/generated/BossLootIndex.lua, hold ItemTree's own data (the zone names, maps,
+pins and sides, and the places and their bosses) and fall under the terms above. Both also read pfQuest's vanilla database (github.com/shagu/pfQuest,
+MIT licensed) for area ids and nothing else. The full GPL-3.0 text is in LICENSES/GPL-3.0.txt and
+CMaNGOS's own copyright notice is in LICENSES/cmangos-COPYRIGHT.md. The source they are compiled
+from, and the scripts that compile them, are at
+https://github.com/Rockjaw-Bonesnapper-Co/itemtree-era-sources.
+
+Libs/LibStub. Placed in the public domain by its authors, as its own file header says. Not
+committed to this repository; a packaged release embeds it.
+
+Libs/CallbackHandler-1.0. An Ace3 library under the Ace3 licence, a BSD style licence:
+redistribution is permitted while the copyright notice, the conditions and the disclaimer are kept,
+a stand alone release of the library is prohibited without prior written authorisation from the
+Lead of the Ace3 Development Team, and the Ace3 name may not be used to endorse anything derived
+from it. The full text is in LICENSES/Ace3.txt. Not committed to this repository.
+
+Blizzard's material. World of Warcraft, its item, creature, quest and zone names, the numbers
+behind them, and every texture ItemTree draws by in-client path or atlas name belong to Blizzard
+Entertainment, Inc. ItemTree ships no Blizzard artwork and claims no ownership of Blizzard's data.

@@ -1,0 +1,25 @@
+## Interface: 16001
+## Title: ItemTree Data
+## Notes: ItemTree's item data. ItemTree loads it the first time it is needed.
+## Author: Rockjaw Bonesnapper Co
+## Version: v0.1.19
+## LoadOnDemand: 1
+## Dependencies: ItemTree
+## IconTexture: Interface\AddOns\ItemTree\Art\minimap
+## X-License: All Rights Reserved
+## X-Curse-Project-ID: 1711215
+## X-Wago-ID: 5NRgev63
+
+# The load on demand half of ItemTree (brief U3). ItemTree keeps at login only the modules its
+# tooltips, bag badges and collector read (its own Data\generated), and asks the client to load
+# this addon the first time the window or a page needs the rest (Core/Data.lua Data:Get). Every
+# file here registers into ItemTree's namespace through the global ItemTree (see the preamble of
+# any module), and ItemTree_Data/Data/generated/EraSources.lua and BossLoot.lua are distributed
+# under GPL-3.0 (data derived from the CMaNGOS Classic content database alone; EraPlaces.lua and
+# BossLootIndex.lua beside them are ours): see ItemTree's LICENSE.
+#
+# The project ids above are ItemTree's own, so an addon manager reads this folder as part of the
+# same project. X-WoWI-ID is deliberately absent: the packager takes the first value it finds in
+# any TOC it reads, and ItemTree.toc leaves that line blank on purpose (docs/release.md).
+
+Data\generated\Data.xml

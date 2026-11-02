@@ -1,0 +1,12 @@
+BlackrockSpire1.tga through BlackrockSpire6.tga:
+Original Blizzard parchment maps, retrieved from:
+https://wow.zamimg.com/images/wow/maps/enus/original/1583-1.jpg
+through 1583-6.jpg. Converted to power-of-two TGA fallback textures.
+Map artwork copyright Blizzard Entertainment.
+
+ScholomanceParchment.tga layout reference:
+Atlas Classic WoW Scholomance map, GPL-2.0 (see ATLAS-LICENSE.txt).
+https://github.com/nanderson11/Atlas/tree/30c7b4c820345c8b41f5ddbb34ba30bb551c675d
+Images/Atlas_ClassicWoW/CL_Scholomance.blp
+The original Atlas texture is not included; this package uses a custom
+illustrated adaptation. See ScholomanceParchment-SOURCE.txt.
